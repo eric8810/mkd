@@ -1,13 +1,16 @@
-# mkd — 超轻量级 macOS Markdown 阅读器
+# mkd — 超轻量级 macOS Markdown 阅读器 & 编辑器
 
-基于 **Rust + GPUI** 的原生 Markdown 阅读器，release 二进制仅 **3.5 MB**（远小于 20 MB 目标）。
+基于 **Rust + GPUI** 的原生 Markdown 阅读器与所见即所得编辑器，release 二进制仅 **3.5 MB**（远小于 20 MB 目标）。
 
-![mkd 界面截图](docs/screenshot.png)
+![mkd 编辑模式截图](docs/screenshot.png)
 
 ## 特性
 
 - macOS 原生窗口（Metal 渲染，Retina 适配），中文混排友好
-- 快捷键：`Cmd+Q` 退出，`Cmd+R` 重新加载当前文件
+- **所见即所得编辑**（`Cmd+E` 切换）：直接在渲染视图上编辑，粗体 / 斜体 / 标题 / 列表 / 代码块即时显示
+- 编辑时实时行级解析：`**粗体**`、`*斜体*`、`***粗斜体***`、`` `行内代码` ``、`~~删除线~~`、`==高亮==`、`[链接](url)` 直接显示渲染效果
+- `Cmd+S` 保存，未保存时显示 `●` 标记
+- `Cmd+Q` 退出，`Cmd+R` 重新加载（预览模式）
 - 支持 Finder 打开：双击 .md 文件或用 `open -a mkd 文件.md`（冷启动 / 热启动均可）
 
 ## VitePress Markdown 支持
@@ -36,9 +39,21 @@ cargo build --release        # 产出 target/release/mkd (3.5 MB)
 ## 使用
 
 ```sh
-./target/release/mkd 文件.md      # 命令行直接打开
-open -a dist/mkd.app 文件.md      # 通过 Finder / Launch Services 打开
+./target/release/mkd 文件.md            # 命令行直接打开（预览）
+./target/release/mkd --edit 文件.md     # 直接进入编辑模式
+open -a dist/mkd.app 文件.md            # 通过 Finder / Launch Services 打开
 ```
+
+## 快捷键
+
+| 快捷键 | 功能 |
+| ---- | ---- |
+| `Cmd+E` | 编辑 / 预览切换 |
+| `Cmd+S` | 保存（编辑模式） |
+| `Cmd+Q` | 退出 |
+| `Cmd+R` | 重新加载文件（预览模式） |
+| 方向键 / `Shift`+方向键 | 移动光标 / 扩展选区 |
+| `Cmd+A` / `Cmd+C` / `Cmd+X` / `Cmd+V` | 全选 / 复制 / 剪切 / 粘贴 |
 
 ## 技术栈
 
@@ -47,7 +62,7 @@ open -a dist/mkd.app 文件.md      # 通过 Finder / Launch Services 打开
 | [gpui](https://crates.io/crates/gpui) 0.2 | Zed 的 GPU UI 框架，macOS 原生窗口 |
 | [pulldown-cmark](https://crates.io/crates/pulldown-cmark) 0.13 | CommonMark / GFM / 扩展解析 |
 | [emojis](https://crates.io/crates/emojis) 0.9 | Emoji 短代码查询 |
-| 渲染 | `StyledText` + `HighlightStyle` 内联富文本，`div` 布局 |
+| 编辑器 | 自写行内解析器（渲染文本 ↔ 源码映射）+ `EntityInputHandler`（IME 支持） |
 
 ## 体积优化
 
