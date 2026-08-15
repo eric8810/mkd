@@ -1,0 +1,16 @@
+[package]
+name = "mkd"
+version = "0.1.0"
+edition = "2021"
+description = "A featherweight macOS-native Markdown reader built on GPUI"
+
+[dependencies]
+gpui = "0.2.2"
+pulldown-cmark = "0.13"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = "z"
+strip = true
+panic = "abort"
