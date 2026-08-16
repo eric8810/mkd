@@ -75,6 +75,8 @@ struct MarkdownView {
     dragging: bool,
     drag_from: Option<((usize, usize), (usize, usize))>,
     drag_to: Option<(usize, usize)>,
+    /// SAV-08：自动保存开关。
+    autosave: bool,
 }
 
 impl MarkdownView {
@@ -104,6 +106,7 @@ impl MarkdownView {
             dragging: false,
             drag_from: None,
             drag_to: None,
+            autosave: false,
         }
     }
 
@@ -170,6 +173,25 @@ impl MarkdownView {
             self.editor = Editor::new(&self.raw_source);
             self.edit_mode = true;
             window.focus(&self.focus_handle);
+            // SAV-08：自动保存定时器（每 30s 若有改动且开关开启）
+            if self.autosave {
+                let this = cx.entity().downgrade();
+                cx.spawn(|_, cx: &mut AsyncApp| {
+                    let mut cx = cx.clone();
+                    async move {
+                        loop {
+                            Timer::after(Duration::from_secs(30)).await;
+                            this.update(&mut cx, |view, cx| {
+                                if view.edit_mode && view.editor.dirty && view.path.is_some() {
+                                    view.autosave_tick(cx);
+                                }
+                            })
+                            .ok();
+                        }
+                    }
+                })
+                .detach();
+            }
             // NAV-10：光标闪烁定时器
             let this = cx.entity().downgrade();
             cx.spawn(|_, cx: &mut AsyncApp| {
@@ -230,6 +252,30 @@ impl MarkdownView {
                 }
             })
             .detach();
+            return;
+        }
+        self.do_write(source, cx);
+    }
+
+    /// 自动保存：不弹外部修改确认，直接写盘；失败进 error 条。
+    fn autosave_tick(&mut self, cx: &mut Context<Self>) {
+        let mut source = self.editor.to_source();
+        if self.raw_source.ends_with('\n') && !source.ends_with('\n') {
+            source.push('\n');
+        }
+        let path = self.path.clone();
+        let external_changed = path
+            .as_ref()
+            .map(|p| {
+                std::fs::read_to_string(p)
+                    .map(|disk| disk != self.raw_source && disk != source)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if external_changed {
+            // 磁盘被外部修改：自动保存跳过，避免覆盖他人更改
+            self.error =
+                Some("自动保存跳过：文件已被外部修改。请手动保存确认覆盖。".into());
             return;
         }
         self.do_write(source, cx);
@@ -1212,10 +1258,12 @@ impl EntityInputHandler for MarkdownView {
 fn main() {
     let mut args = env::args().skip(1);
     let mut edit_mode_start = false;
+    let mut autosave_start = false;
     let mut initial_path: Option<PathBuf> = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--edit" => edit_mode_start = true,
+            "--autosave" => autosave_start = true,
             _ => {
                 if !a.starts_with('-') && initial_path.is_none() {
                     initial_path = Some(PathBuf::from(a));
@@ -1270,7 +1318,9 @@ fn main() {
                             }
                         })
                         .detach();
-                        MarkdownView::load(initial_path, cx.focus_handle())
+                        let mut view = MarkdownView::load(initial_path, cx.focus_handle());
+                        view.autosave = autosave_start;
+                        view
                     })
                 },
             )

@@ -271,6 +271,9 @@ impl Editor {
     }
 
     /// 记录编辑开始：非合并操作在此压入「操作前」快照。
+    /// UND-05：撤销历史上限（超出丢弃最旧步骤）。
+    const MAX_UNDO: usize = 100;
+
     fn begin_edit(&mut self, mergeable: bool) {
         // 连续键入（Type/Paste）在时间窗内合并为一步；结构操作不合并。
         let now = std::time::Instant::now();
@@ -279,6 +282,9 @@ impl Editor {
             && now.duration_since(self.last_op_at.unwrap_or(now)).as_millis() < 1200
             && self.sel_start.is_none();
         if !merge {
+            if self.undo_stack.len() >= Self::MAX_UNDO {
+                self.undo_stack.remove(0);
+            }
             self.undo_stack.push(self.snapshot());
             self.redo_stack.clear();
         }
@@ -1636,6 +1642,21 @@ mod tests {
         let mut e = setup("|a   b");
         e.move_word_right();
         assert_eq!(e.cursor_col, 4, "跨过连续空格到 b");
+    }
+
+    #[test]
+    fn und05_history_cap() {
+        // UND-05：撤销历史上限 100
+        let mut e = setup("|");
+        for _ in 0..110 {
+            e.apply(&Op::Newline);
+        }
+        assert_eq!(e.undo_depth(), 100, "undo 栈应被裁剪到上限");
+        // 仍可撤销并恢复
+        e.apply(&Op::Undo);
+        assert_eq!(e.lines.len(), 110);
+        e.apply(&Op::Undo);
+        assert_eq!(e.lines.len(), 109);
     }
 
     #[test]
