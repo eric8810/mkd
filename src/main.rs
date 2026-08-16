@@ -380,11 +380,46 @@ impl Render for MarkdownView {
                 .on_action(cx.listener(|this, _: &Save, _w, cx| this.save(cx)))
                 .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _w, cx| {
                     if let Some((line, dcol)) = this.editor.pos_for_point(ev.position) {
-                        this.editor.cursor_line = line;
-                        this.editor.cursor_col = this.editor.source_col_for_display(line, dcol);
-                        this.editor.sel_start = None;
+                        if ev.click_count >= 3 {
+                            // 三击：选整行（SEL-08）
+                            this.editor.select_line_at(line);
+                            this.editor.drag_anchor = None;
+                        } else if ev.click_count == 2 {
+                            // 双击：选词（SEL-04）
+                            this.editor.select_word_at(line, dcol);
+                            this.editor.drag_anchor = None;
+                        } else if ev.modifiers.shift {
+                            // Shift+点击：扩展选区
+                            if this.editor.sel_start.is_none() {
+                                this.editor.sel_start = Some((this.editor.cursor_line, this.editor.cursor_col));
+                            }
+                            this.editor.cursor_line = line;
+                            this.editor.cursor_col = this.editor.source_col_for_display(line, dcol);
+                            this.editor.drag_anchor = None;
+                        } else {
+                            // 单击：定位光标 + 开始拖选（SEL-02）
+                            this.editor.cursor_line = line;
+                            this.editor.cursor_col = this.editor.source_col_for_display(line, dcol);
+                            this.editor.sel_start = None;
+                            this.editor.drag_anchor = Some((line, this.editor.cursor_col));
+                        }
                         cx.notify();
                     }
+                }))
+                .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, _w, cx| {
+                    // 拖选：按住左键移动扩展选区
+                    if let Some(anchor) = this.editor.drag_anchor {
+                        if let Some((line, dcol)) = this.editor.pos_for_point(ev.position) {
+                            this.editor.cursor_line = line;
+                            this.editor.cursor_col = this.editor.source_col_for_display(line, dcol);
+                            this.editor.sel_start = Some(anchor);
+                            cx.notify();
+                        }
+                    }
+                }))
+                .on_mouse_up(MouseButton::Left, cx.listener(|this, _ev, _w, cx| {
+                    this.editor.drag_anchor = None;
+                    cx.notify();
                 }))
                 .cursor_text()
                 .child(toolbar)
@@ -742,7 +777,37 @@ fn main() {
                 .ok();
         }
         cx.activate(true);
-        cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.on_action(move |_: &Quit, cx| {
+            // SAV-05：未保存更改时确认退出
+            let w = window.clone();
+            let dirty = w
+                .update(cx, |view, _window, _cx| {
+                    view.edit_mode && view.editor.dirty
+                })
+                .unwrap_or(false);
+            if dirty {
+                w.update(cx, |view, window, cx| {
+                    let answer = window.prompt(
+                        gpui::PromptLevel::Warning,
+                        "有未保存的更改，确定放弃并退出？",
+                        None,
+                        &["放弃并退出", "取消"],
+                        cx,
+                    );
+                    cx.spawn(|_this: WeakEntity<MarkdownView>, cx: &mut AsyncApp| { let mut cx = cx.clone(); async move {
+                        if answer.await == Ok(0) {
+                            cx.update(|cx| cx.quit()).ok();
+                        }
+                    }
+                    })
+                    .detach();
+                    let _ = view;
+                })
+                .ok();
+            } else {
+                cx.quit();
+            }
+        });
         cx.on_action(move |_: &Reload, cx| {
             window
                 .update(cx, |view, _window, cx| view.reload(cx))

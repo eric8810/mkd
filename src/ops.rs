@@ -1560,4 +1560,125 @@ mod tests {
         assert_eq!(render(&e), "1. a\n2. b|");
     }
 
+    // ================= SEL 选区增强 =================
+
+    #[test]
+    fn double_click_selects_word() {
+        // SEL-04：双击选词（显示文本词边界，映射回源码）
+        let mut e = setup("hello **world** here|");
+        // 光标在 "world" 内（显示位置）
+        e.select_word_at(0, 8); // "world" 在 display 的 6..11
+        let sel = e.selected_text().unwrap();
+        assert_eq!(sel, "world");
+    }
+
+    #[test]
+    fn double_click_selects_cjk_word() {
+        let mut e = setup("这是 **中文** 测试|");
+        e.select_word_at(0, 3);
+        assert_eq!(e.selected_text().unwrap(), "中文");
+    }
+
+    #[test]
+    fn triple_click_selects_line() {
+        // SEL-08：三击选整行
+        let mut e = setup("hello world|");
+        e.select_line_at(0);
+        assert_eq!(e.selected_text().unwrap(), "hello world");
+    }
+
+    #[test]
+    fn shift_click_extends_selection() {
+        // Shift+点击扩展：由 UI 层处理，逻辑层验证选区锚定
+        let mut e = setup("abcdef|");
+        e.sel_start = Some((0, 0));
+        e.cursor_col = 3;
+        assert_eq!(e.selected_text().unwrap(), "abc");
+    }
+
+    // ================= REN 双渲染器一致性 =================
+
+    /// 提取预览文档的纯文本。
+    fn preview_text(src: &str) -> String {
+        fn collect(b: &crate::parse::Block, out: &mut String) {
+            use crate::parse::Block;
+            match b {
+                Block::Paragraph { inline, .. } => out.push_str(&inline.0),
+                Block::Heading { inline, .. } => out.push_str(&inline.0),
+                Block::List { items, .. } => {
+                    for it in items {
+                        for b in it {
+                            collect(b, out);
+                        }
+                    }
+                }
+                Block::Quote(inner) => {
+                    for b in inner {
+                        collect(b, out);
+                    }
+                }
+                Block::Code { text, .. } => out.push_str(text),
+                Block::Table { head, rows } => {
+                    for c in head {
+                        out.push_str(&c.0);
+                    }
+                    for r in rows {
+                        for c in r {
+                            out.push_str(&c.0);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let doc = crate::parse::parse_document(src, None);
+        let mut out = String::new();
+        for b in &doc.blocks {
+            collect(b, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn render_parity_core_inline() {
+        // REN-01：核心行内语法，编辑视图与预览文本一致
+        let cases = [
+            "hello world",
+            "**bold** and *italic*",
+            "***both***",
+            "`code` here",
+            "~~strike~~",
+            "[link](https://a.b) text",
+            "# heading",
+            "## sub heading",
+            "> quote",
+        ];
+        for src in cases {
+            let editor = crate::editor::parse_line(src, false).display;
+            let preview = preview_text(src);
+            assert_eq!(
+                editor.trim(),
+                preview.trim(),
+                "render parity for {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_parity_known_divergences() {
+        // 已知差异（spec REN-01 遗留）：编辑视图支持但预览（pulldown 默认选项）不支持
+        // 1. ==mark==：两边都去标记显示（parse_inline 的 split_mark 双端一致）
+        let e = crate::editor::parse_line("==mark==", false).display;
+        assert_eq!(e, "mark");
+        let p = preview_text("==mark==");
+        assert_eq!(p, "mark", "预览与编辑视图一致");
+        // 2. 上下标：编辑视图与预览都去标记，一致
+        let e2 = crate::editor::parse_line("H~2~O", false).display;
+        assert_eq!(e2, "H2O");
+        let p2 = preview_text("H~2~O");
+        assert_eq!(p2, "H2O", "预览与编辑视图一致");
+        let e3 = crate::editor::parse_line("E=mc^2^", false).display;
+        assert_eq!(e3, "E=mc2");
+    }
+
 }

@@ -32,6 +32,8 @@ enum TextStyle {
     Strike,
     Mark,
     Link,
+    Superscript,
+    Subscript,
 }
 
 #[derive(Clone, Debug)]
@@ -219,6 +221,10 @@ fn parse_inline_body(
             1
         } else if c == b'~' && i + 1 < bytes.len() && bytes[i + 1] == b'~' {
             2
+        } else if c == b'~' {
+            1
+        } else if c == b'^' {
+            1
         } else if c == b'=' && i + 1 < bytes.len() && bytes[i + 1] == b'=' {
             2
         } else if c == b'*' {
@@ -252,6 +258,8 @@ fn parse_inline_body(
                     (b'*', 1) => TextStyle::Italic,
                     (b'`', _) => TextStyle::Code,
                     (b'~', 2) => TextStyle::Strike,
+                    (b'~', 1) => TextStyle::Subscript,
+                    (b'^', 1) => TextStyle::Superscript,
                     (b'=', 2) => TextStyle::Mark,
                     _ => TextStyle::Plain,
                 };
@@ -343,6 +351,13 @@ fn find_closer(s: &str, delim: u8, open_len: usize) -> Option<usize> {
                 if i + 1 < bytes.len() && bytes[i + 1] == delim {
                     return Some(i);
                 }
+            } else if delim == b'~' {
+                // 单 ~：不能是 ~~ 的一部分
+                let prev_tilde = i > 0 && bytes[i - 1] == b'~';
+                let next_tilde = i + 1 < bytes.len() && bytes[i + 1] == b'~';
+                if !prev_tilde && !next_tilde {
+                    return Some(i);
+                }
             } else if delim == b'*' {
                 let prev_is_star = i > 0 && bytes[i - 1] == b'*';
                 let next_is_star = i + 1 < bytes.len() && bytes[i + 1] == b'*';
@@ -383,6 +398,8 @@ pub struct Editor {
     pub pending_marks: Vec<crate::ops::Mark>,
     /// 跨行上下移动的记忆列（NAV-02 stick column）。
     pub stick_col: Option<usize>,
+    /// 拖选锚点（SEL-02）：按下时的光标位置。
+    pub drag_anchor: Option<(usize, usize)>,
 }
 
 impl Editor {
@@ -407,6 +424,7 @@ impl Editor {
             rule_state: crate::ops::RuleState::None,
             pending_marks: Vec::new(),
             stick_col: None,
+            drag_anchor: None,
         }
     }
 
@@ -548,6 +566,78 @@ impl Editor {
             Some(c) => col + c.len_utf8(),
             None => col,
         }
+    }
+
+    /// 在 (line, 显示列) 处选择当前词（SEL-04 双击）。
+    pub fn select_word_at(&mut self, line: usize, dcol: usize) {
+        let src = self.line(line).to_string();
+        let parsed = parse_line(&src, false);
+        let display = &parsed.display;
+        let chars: Vec<char> = display.chars().collect();
+        if chars.is_empty() {
+            self.cursor_line = line;
+            self.cursor_col = parsed.prefix_len;
+            self.sel_start = None;
+            return;
+        }
+        let d = dcol.min(chars.len().saturating_sub(1));
+        let (mut start, mut end) = if chars[d].is_whitespace() {
+            let mut j = d;
+            while j > 0 && chars[j - 1].is_whitespace() {
+                j -= 1;
+            }
+            if j == 0 {
+                self.cursor_line = line;
+                self.cursor_col = parsed.prefix_len + d;
+                self.sel_start = None;
+                return;
+            }
+            let e = j;
+            let mut st = j;
+            while st > 0 && !chars[st - 1].is_whitespace() {
+                st -= 1;
+            }
+            (st, e)
+        } else {
+            let mut st = d;
+            while st > 0 && !chars[st - 1].is_whitespace() {
+                st -= 1;
+            }
+            let mut e = d;
+            while e < chars.len() && !chars[e].is_whitespace() {
+                e += 1;
+            }
+            (st, e)
+        };
+        if end <= start {
+            end = start + 1;
+        }
+        // map 按显示字符序号索引；start/end 即字符序号
+        let src_start = parsed.map.get(start).copied().unwrap_or(parsed.prefix_len);
+        // 右边界：词最后一个显示字符在源码中的末尾（跳过闭合标记）
+        let src_end = if end >= parsed.map.len() {
+            src.len()
+        } else if end == 0 {
+            parsed.prefix_len
+        } else {
+            let last_char = parsed.display.chars().nth(end - 1).unwrap_or(' ');
+            parsed
+                .map
+                .get(end - 1)
+                .map(|&off| off + last_char.len_utf8())
+                .unwrap_or(src.len())
+        };
+        self.sel_start = Some((line, src_start));
+        self.cursor_line = line;
+        self.cursor_col = src_end.max(src_start);
+    }
+
+    /// 选择整行（SEL-08 三击）：从行首到行尾。
+    pub fn select_line_at(&mut self, line: usize) {
+        let len = self.line_len(line);
+        self.sel_start = Some((line, 0));
+        self.cursor_line = line;
+        self.cursor_col = len;
     }
 
     pub fn selection_bounds(&self) -> Option<((usize, usize), (usize, usize))> {
@@ -1043,6 +1133,10 @@ fn build_runs(parsed: &ParsedLine, t: &Theme, _font_size: f32) -> Vec<TextRun> {
             }
             TextStyle::Mark => bg = Some(t.line_highlight),
             TextStyle::Link => color = t.info_accent,
+            TextStyle::Superscript | TextStyle::Subscript => {
+                font.style = FontStyle::Italic;
+                color = t.muted;
+            }
             TextStyle::Strike | TextStyle::Plain => {}
         }
         runs.push(TextRun {
