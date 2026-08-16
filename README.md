@@ -63,6 +63,9 @@ open -a dist/mkd.app 文件.md            # 通过 Finder / Launch Services 打�
 | `Cmd+Alt+0-6` | 段落 / 标题 1-6 |
 | `Cmd+Alt+C` / `Cmd+Alt+Q` | 代码块 / 引用 |
 | `Cmd+Shift+7/8/9` | 任务 / 无序 / 有序列表 |
+| `Cmd+F` / `Enter` / `Esc` | 查找 / 下一个匹配 / 关闭 |
+| `Option+←/→` | 按词移动光标 |
+| 拖选文本后拖动 | 移动（`Option` 复制）选中文本 |
 | `Cmd+Q` | 退出（未保存确认） |
 | `Cmd+R` | 重新加载文件（预览模式） |
 | `Enter` / `Shift+Enter` | 段落回车 / 硬换行 |
@@ -80,7 +83,7 @@ open -a dist/mkd.app 文件.md            # 通过 Finder / Launch Services 打�
 | [pulldown-cmark](https://crates.io/crates/pulldown-cmark) 0.13 | CommonMark / GFM / 扩展解析 |
 | [emojis](https://crates.io/crates/emojis) 0.9 | Emoji 短代码查询 |
 | 编辑器 | 自写行内解析器（渲染文本 ↔ 源码映射）+ `EntityInputHandler`（IME 支持） |
-| 测试 | 100 个单元测试：Op 模型 / 撤销 / 输入规则 / 列表 / 格式化 / 选区 / 渲染一致性对照 |
+| 测试 | 106 个单元测试：Op 模型 / 撤销 / 输入规则 / 列表 / 格式化 / 选区 / 拖放 / 查找 / 渲染一致性对照 |
 
 ## 体积优化
 
