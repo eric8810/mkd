@@ -1251,6 +1251,76 @@ mod tests {
     }
 
     #[test]
+    fn ren03_unclosed_markers_degrade() {
+        // REN-03：未闭合标记降级显示，不崩溃、可读
+        let p = parse_line("**未闭合加粗", false);
+        assert!(!p.display.is_empty(), "未闭合标记仍显示可读文本");
+        assert!(p.display.contains("加粗"), "内容保留");
+        let p = parse_line("*斜体未闭合", false);
+        assert!(p.display.contains("斜体"));
+        let p = parse_line("~~删除未闭合", false);
+        assert!(p.display.contains("删除"));
+        let p = parse_line("`代码未闭合", false);
+        assert!(p.display.contains("代码"));
+        let p = parse_line("==高亮未闭合", false);
+        assert!(p.display.contains("高亮"));
+        // 空行 / 纯空白行
+        let p = parse_line("", false);
+        assert_eq!(p.display, "");
+        let p = parse_line("   ", false);
+        assert!(p.display.chars().all(char::is_whitespace));
+    }
+
+    #[test]
+    fn ren04_fullwidth_and_empty() {
+        // REN-04：全角空格、空文档、tab 处理
+        let p = parse_line("　全角开头", false);
+        assert!(p.display.starts_with('　'), "全角空格保留");
+        let p = parse_line("a　b", false);
+        assert_eq!(p.display, "a　b");
+        let p = parse_line("\t缩进", false);
+        assert!(!p.display.is_empty());
+    }
+
+    #[test]
+    fn md06_indent_semantics() {
+        // MD-06：缩进语义一致（列表嵌套 vs 普通缩进行）
+        let p = parse_line("    - 嵌套项", false);
+        assert_eq!(p.line_style, LineStyle::Bullet, "缩进 + 列表标记 = 嵌套列表");
+        assert_eq!(p.prefix_len, 6, "前缀含 4 缩进 + 标记");
+        let p = parse_line("        1. 深层", false);
+        assert_eq!(p.line_style, LineStyle::Ordered);
+        let p = parse_line("    普通缩进", false);
+        assert_eq!(p.line_style, LineStyle::Plain, "纯缩进行 = 普通文本（与渲染一致）");
+        let p = parse_line("  > 缩进引用", false);
+        assert_eq!(p.line_style, LineStyle::Quote, "缩进引用");
+    }
+
+    #[test]
+    fn usr02_tenk_line_perf() {
+        // USR-02：万行级不卡顿（宽松阈值，避免 CI 抖动）
+        use std::time::Instant;
+        let mut doc = String::new();
+        for i in 0..10_000 {
+            doc.push_str(&format!("- 第 {} 项，包含 **加粗** 与 `代码` 与 中文内容\n", i));
+        }
+        let start = Instant::now();
+        let mut in_fence = false;
+        for line in doc.lines() {
+            let parsed = parse_line(line, in_fence);
+            if parsed.line_style == LineStyle::Fence {
+                in_fence = !in_fence;
+            }
+            assert!(!parsed.display.is_empty());
+        }
+        assert!(
+            start.elapsed().as_millis() < 2000,
+            "万行解析应在 2s 内，实际 {}ms",
+            start.elapsed().as_millis()
+        );
+    }
+
+    #[test]
     fn code_span() {
         let p = parse_line("用 `x = 1` 表示", false);
         assert_eq!(p.display, "用 x = 1 表示");
