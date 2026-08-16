@@ -91,6 +91,12 @@ pub enum Op {
         to: (usize, usize),
         copy: bool,
     },
+    /// 拖拽排序（DRG-03）：整行（列表项）移动到目标行前/后。
+    MoveLine {
+        from: usize,
+        to: usize,
+        after: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +249,11 @@ impl Editor {
             Op::MoveRange { from, to, copy } => {
                 self.begin_edit(false);
                 self.move_range(*from, *to, *copy);
+                self.end_edit(false);
+            }
+            Op::MoveLine { from, to, after } => {
+                self.begin_edit(false);
+                self.move_line(*from, *to, *after);
                 self.end_edit(false);
             }
         }
@@ -837,6 +848,28 @@ impl Editor {
         let nl = text.matches('\n').count();
         self.cursor_line = tl + nl;
         self.cursor_col = last.len();
+        self.sel_start = None;
+        self.dirty = true;
+    }
+
+    // ---- DRG-03：列表项/行拖拽排序 ----
+
+    fn move_line(&mut self, from: usize, to: usize, after: bool) {
+        if from >= self.lines.len() || to >= self.lines.len() {
+            return;
+        }
+        if from == to && !after {
+            return;
+        }
+        let line = self.lines.remove(from);
+        let mut target = to;
+        if from < to {
+            target = to - 1; // 移除后目标行前移一位
+        }
+        let insert_at = (if after { target + 1 } else { target }).min(self.lines.len());
+        self.lines.insert(insert_at, line);
+        self.cursor_line = insert_at;
+        self.cursor_col = self.lines[insert_at].len();
         self.sel_start = None;
         self.dirty = true;
     }
@@ -1642,6 +1675,35 @@ mod tests {
         let mut e = setup("|a   b");
         e.move_word_right();
         assert_eq!(e.cursor_col, 4, "跨过连续空格到 b");
+    }
+
+    #[test]
+    fn drg03_move_line_sort() {
+        // 拖到目标行前：- a 插到 - c 前
+        let mut e = setup("- a\n- b\n- c|");
+        e.apply(&Op::MoveLine { from: 0, to: 2, after: false });
+        assert_eq!(render(&e), "- b\n- a|\n- c");
+        // 拖到目标行后：- c 插到 - a 后
+        let mut e = setup("- a\n- b\n- c|");
+        e.apply(&Op::MoveLine { from: 2, to: 0, after: true });
+        assert_eq!(render(&e), "- a\n- c|\n- b");
+        // 同行无操作
+        let mut e = setup("- a\n- b|");
+        e.apply(&Op::MoveLine { from: 1, to: 1, after: false });
+        assert_eq!(render(&e), "- a\n- b|");
+        // 上移：- c 拖到 - a 前（列表开头）
+        let mut e = setup("- a\n- b\n- c|");
+        e.apply(&Op::MoveLine { from: 2, to: 0, after: false });
+        assert_eq!(render(&e), "- c|\n- a\n- b");
+        // 下移：- a 拖到 - c 后（列表末尾）
+        let mut e = setup("- a\n- b\n- c|");
+        e.apply(&Op::MoveLine { from: 0, to: 2, after: true });
+        assert_eq!(render(&e), "- b\n- c\n- a|");
+        // 移动后光标落在移动行（undo 可恢复）
+        let mut e = setup("- a\n- b\n- c|");
+        e.apply(&Op::MoveLine { from: 0, to: 2, after: true });
+        e.apply(&Op::Undo);
+        assert_eq!(render(&e), "- a\n- b\n- c|");
     }
 
     #[test]

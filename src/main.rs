@@ -862,7 +862,25 @@ impl Render for MarkdownView {
                 .on_mouse_up(MouseButton::Left, cx.listener(|this, ev: &gpui::MouseUpEvent, _w, cx| {
                     if this.dragging {
                         if let (Some(from), Some(to)) = (this.drag_from, this.drag_to) {
-                            if (from.0, from.1) != (to, to)
+                            // DRG-03：整行列表项 → 行级排序
+                            let from_line = from.0 .0;
+                            let fl = this.editor.line(from_line).len();
+                            let is_full_line = from.0 .1 == 0 && from.1 .1 == fl;
+                            let is_list = matches!(
+                                crate::editor::parse_line(&this.editor.line(from_line), false)
+                                    .line_style,
+                                crate::editor::LineStyle::Bullet
+                                    | crate::editor::LineStyle::Ordered
+                            );
+                            if is_full_line && is_list && !ev.modifiers.alt {
+                                let target_len = this.editor.line(to.0).len();
+                                let after = to.1 > target_len / 2;
+                                this.editor.apply(&ops::Op::MoveLine {
+                                    from: from_line,
+                                    to: to.0,
+                                    after,
+                                });
+                            } else if (from.0, from.1) != (to, to)
                                 && !((to, to) >= (from.0, from.1) && (to, to) <= (from.1, from.1))
                             {
                                 this.editor.apply(&ops::Op::MoveRange {
