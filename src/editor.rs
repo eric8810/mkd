@@ -75,6 +75,13 @@ pub struct ParsedLine {
     segs: Vec<Seg>,
 }
 
+/// 判断是否为代码围栏行。
+pub fn is_fence_line(line: &str) -> bool {
+    let t = line.trim_start();
+    let f = t.chars().next();
+    matches!(f, Some('`') | Some('~')) && t.chars().take_while(|&c| c == f.unwrap()).count() >= 3
+}
+
 /// 从源码行解析出显示文本与映射。标记不跨行。
 pub fn parse_line(src: &str, in_fence: bool) -> ParsedLine {
     let (line_style, prefix_len) = detect_line_style(src);
@@ -374,6 +381,8 @@ pub struct Editor {
     pub last_op_at: Option<std::time::Instant>,
     pub rule_state: crate::ops::RuleState,
     pub pending_marks: Vec<crate::ops::Mark>,
+    /// 跨行上下移动的记忆列（NAV-02 stick column）。
+    pub stick_col: Option<usize>,
 }
 
 impl Editor {
@@ -397,6 +406,7 @@ impl Editor {
             last_op_at: None,
             rule_state: crate::ops::RuleState::None,
             pending_marks: Vec::new(),
+            stick_col: None,
         }
     }
 
@@ -418,6 +428,7 @@ impl Editor {
         } else if self.sel_start.is_none() {
             self.sel_start = Some((self.cursor_line, self.cursor_col));
         }
+        self.stick_col = None;
         if self.cursor_col > 0 {
             self.cursor_col = self.prev_boundary(self.cursor_line, self.cursor_col);
         } else if self.cursor_line > 0 {
@@ -432,6 +443,7 @@ impl Editor {
         } else if self.sel_start.is_none() {
             self.sel_start = Some((self.cursor_line, self.cursor_col));
         }
+        self.stick_col = None;
         let len = self.line_len(self.cursor_line);
         if self.cursor_col < len {
             self.cursor_col = self.next_boundary(self.cursor_line, self.cursor_col);
@@ -447,9 +459,11 @@ impl Editor {
         } else if self.sel_start.is_none() {
             self.sel_start = Some((self.cursor_line, self.cursor_col));
         }
+        let dcol = self.stick_col();
         if self.cursor_line > 0 {
+            // 视觉列保持（NAV-02）：按记忆列跨行，短行截断
             self.cursor_line -= 1;
-            self.cursor_col = self.cursor_col.min(self.line_len(self.cursor_line));
+            self.cursor_col = self.source_col_for_display(self.cursor_line, dcol);
         } else {
             self.cursor_col = 0;
         }
@@ -461,12 +475,43 @@ impl Editor {
         } else if self.sel_start.is_none() {
             self.sel_start = Some((self.cursor_line, self.cursor_col));
         }
+        let dcol = self.stick_col();
         if self.cursor_line + 1 < self.lines.len() {
             self.cursor_line += 1;
-            self.cursor_col = self.cursor_col.min(self.line_len(self.cursor_line));
+            self.cursor_col = self.source_col_for_display(self.cursor_line, dcol);
         } else {
             self.cursor_col = self.line_len(self.cursor_line);
         }
+    }
+
+    /// 记忆列：首次跨行时记录当前显示列，之后保持（短行截断后仍能恢复）。
+    fn stick_col(&mut self) -> usize {
+        if let Some(c) = self.stick_col {
+            return c;
+        }
+        let parsed = parse_line(self.line(self.cursor_line), false);
+        let dcol = self.cursor_display_col(&parsed);
+        self.stick_col = Some(dcol);
+        dcol
+    }
+
+    /// 水平移动或编辑时清除记忆列。
+    pub fn clear_stick_col(&mut self) {
+        self.stick_col = None;
+    }
+
+    /// 判断某行是否在代码围栏内（不含该行自身的围栏开闭）。
+    pub fn in_fence_at(&self, line: usize) -> bool {
+        let mut in_fence = false;
+        for (i, l) in self.lines.iter().enumerate() {
+            if i >= line {
+                break;
+            }
+            if is_fence_line(l) {
+                in_fence = !in_fence;
+            }
+        }
+        in_fence
     }
 
     pub fn move_home(&mut self, extend: bool) {
@@ -554,6 +599,7 @@ impl Editor {
             self.delete_selection();
         }
         self.marked = None;
+        self.stick_col = None;
         let (line, col) = (self.cursor_line, self.cursor_col);
         let head = self.lines[line][..col].to_string();
         let tail = self.lines[line][col..].to_string();
@@ -583,6 +629,7 @@ impl Editor {
             return;
         }
         self.marked = None;
+        self.stick_col = None;
         let (line, col) = (self.cursor_line, self.cursor_col);
         if col > 0 {
             let prev = self.prev_boundary(line, col);
@@ -606,6 +653,7 @@ impl Editor {
             return;
         }
         self.marked = None;
+        self.stick_col = None;
         let (line, col) = (self.cursor_line, self.cursor_col);
         let len = self.line_len(line);
         if col < len {
@@ -618,14 +666,6 @@ impl Editor {
             self.lines[line].push_str(&tail);
             self.dirty = true;
         }
-    }
-
-    pub fn insert_newline(&mut self) {
-        self.insert_text("\n");
-    }
-
-    pub fn insert_tab(&mut self) {
-        self.insert_text("    ");
     }
 
     pub fn select_all(&mut self) {
@@ -1117,12 +1157,13 @@ mod tests {
 
     #[test]
     fn insert_newline_splits() {
+        // MD-02：段落中回车 → 拆段插空行，光标在新段开头
         let mut e = Editor::new("ab\ncd");
         e.cursor_line = 0;
         e.cursor_col = 1;
-        e.insert_newline();
-        assert_eq!(e.lines, vec!["a", "b", "cd"]);
-        assert_eq!((e.cursor_line, e.cursor_col), (1, 0));
+        e.apply(&crate::ops::Op::Newline);
+        assert_eq!(e.lines, vec!["a", "", "b", "cd"]);
+        assert_eq!((e.cursor_line, e.cursor_col), (2, 0));
     }
 
     #[test]

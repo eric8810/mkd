@@ -166,52 +166,6 @@ impl MarkdownView {
         cx.notify();
     }
 
-    // ---- 编辑按键处理 ----
-
-    fn edit_left(&mut self, extend: bool, cx: &mut Context<Self>) {
-        self.editor.move_left(extend);
-        cx.notify();
-    }
-    fn edit_right(&mut self, extend: bool, cx: &mut Context<Self>) {
-        self.editor.move_right(extend);
-        cx.notify();
-    }
-    fn edit_up(&mut self, extend: bool, cx: &mut Context<Self>) {
-        self.editor.move_up(extend);
-        cx.notify();
-    }
-    fn edit_down(&mut self, extend: bool, cx: &mut Context<Self>) {
-        self.editor.move_down(extend);
-        cx.notify();
-    }
-    fn edit_home(&mut self, extend: bool, cx: &mut Context<Self>) {
-        self.editor.move_home(extend);
-        cx.notify();
-    }
-    fn edit_end(&mut self, extend: bool, cx: &mut Context<Self>) {
-        self.editor.move_end(extend);
-        cx.notify();
-    }
-    fn edit_backspace(&mut self, cx: &mut Context<Self>) {
-        self.editor.backspace();
-        cx.notify();
-    }
-    fn edit_delete(&mut self, cx: &mut Context<Self>) {
-        self.editor.delete();
-        cx.notify();
-    }
-    fn edit_enter(&mut self, cx: &mut Context<Self>) {
-        self.editor.insert_newline();
-        cx.notify();
-    }
-    fn edit_tab(&mut self, cx: &mut Context<Self>) {
-        self.editor.insert_tab();
-        cx.notify();
-    }
-    fn edit_select_all(&mut self, cx: &mut Context<Self>) {
-        self.editor.select_all();
-        cx.notify();
-    }
     fn edit_copy(&mut self, cx: &mut Context<Self>) {
         if let Some(text) = self.editor.selected_text() {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -226,7 +180,7 @@ impl MarkdownView {
     }
     fn edit_paste(&mut self, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.editor.insert_text(&text);
+            self.editor.apply(&ops::Op::Paste(text));
             cx.notify();
         }
     }
@@ -279,23 +233,74 @@ impl Render for MarkdownView {
                 .flex_col()
                 .key_context("mkd-editor")
                 .track_focus(&self.focus_handle)
-                .on_action(cx.listener(|this, _: &EditLeft, _w, cx| this.edit_left(false, cx)))
-                .on_action(cx.listener(|this, _: &EditRight, _w, cx| this.edit_right(false, cx)))
-                .on_action(cx.listener(|this, _: &EditUp, _w, cx| this.edit_up(false, cx)))
-                .on_action(cx.listener(|this, _: &EditDown, _w, cx| this.edit_down(false, cx)))
-                .on_action(cx.listener(|this, _: &EditHome, _w, cx| this.edit_home(false, cx)))
-                .on_action(cx.listener(|this, _: &EditEnd, _w, cx| this.edit_end(false, cx)))
-                .on_action(cx.listener(|this, _: &SelectLeft, _w, cx| this.edit_left(true, cx)))
-                .on_action(cx.listener(|this, _: &SelectRight, _w, cx| this.edit_right(true, cx)))
-                .on_action(cx.listener(|this, _: &SelectUp, _w, cx| this.edit_up(true, cx)))
-                .on_action(cx.listener(|this, _: &SelectDown, _w, cx| this.edit_down(true, cx)))
-                .on_action(cx.listener(|this, _: &SelectHome, _w, cx| this.edit_home(true, cx)))
-                .on_action(cx.listener(|this, _: &SelectEnd, _w, cx| this.edit_end(true, cx)))
-                .on_action(cx.listener(|this, _: &Backspace, _w, cx| this.edit_backspace(cx)))
-                .on_action(cx.listener(|this, _: &Delete, _w, cx| this.edit_delete(cx)))
-                .on_action(cx.listener(|this, _: &Enter, _w, cx| this.edit_enter(cx)))
-                .on_action(cx.listener(|this, _: &Tab, _w, cx| this.edit_tab(cx)))
-                .on_action(cx.listener(|this, _: &SelectAll, _w, cx| this.edit_select_all(cx)))
+                .on_action(cx.listener(|this, _: &EditLeft, _w, cx| {
+                    this.editor.apply(&ops::Op::Move(ops::Direction::Left, false));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &EditRight, _w, cx| {
+                    this.editor.apply(&ops::Op::Move(ops::Direction::Right, false));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &EditUp, _w, cx| {
+                    this.editor.apply(&ops::Op::Move(ops::Direction::Up, false));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &EditDown, _w, cx| {
+                    this.editor.apply(&ops::Op::Move(ops::Direction::Down, false));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &EditHome, _w, cx| {
+                    this.editor.apply(&ops::Op::Move(ops::Direction::Home, false));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &EditEnd, _w, cx| {
+                    this.editor.apply(&ops::Op::Move(ops::Direction::End, false));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SelectLeft, _w, cx| {
+                    this.editor.apply(&ops::Op::Move(ops::Direction::Left, true));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SelectRight, _w, cx| {
+                    this.editor.apply(&ops::Op::Move(ops::Direction::Right, true));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SelectUp, _w, cx| {
+                    this.editor.apply(&ops::Op::Move(ops::Direction::Up, true));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SelectDown, _w, cx| {
+                    this.editor.apply(&ops::Op::Move(ops::Direction::Down, true));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SelectHome, _w, cx| {
+                    this.editor.apply(&ops::Op::Move(ops::Direction::Home, true));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SelectEnd, _w, cx| {
+                    this.editor.apply(&ops::Op::Move(ops::Direction::End, true));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &Backspace, _w, cx| {
+                    this.editor.apply(&ops::Op::Backspace);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &Delete, _w, cx| {
+                    this.editor.apply(&ops::Op::Delete);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &Enter, _w, cx| {
+                    this.editor.apply(&ops::Op::Newline);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &Tab, _w, cx| {
+                    this.editor.apply(&ops::Op::Tab);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SelectAll, _w, cx| {
+                    this.editor.apply(&ops::Op::SelectAll);
+                    cx.notify();
+                }))
                 .on_action(cx.listener(|this, _: &Copy, _w, cx| this.edit_copy(cx)))
                 .on_action(cx.listener(|this, _: &Cut, _w, cx| this.edit_cut(cx)))
                 .on_action(cx.listener(|this, _: &Paste, _w, cx| this.edit_paste(cx)))

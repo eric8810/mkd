@@ -117,12 +117,15 @@ impl Editor {
     }
 
     /// 撤销 / 重做状态。
+    #[allow(dead_code)]
     pub fn undo_depth(&self) -> usize {
         self.undo_stack.len()
     }
+    #[allow(dead_code)]
     pub fn redo_depth(&self) -> usize {
         self.redo_stack.len()
     }
+    #[allow(dead_code)]
     pub fn reset_history(&mut self) {
         self.undo_stack.clear();
         self.redo_stack.clear();
@@ -328,17 +331,6 @@ impl Editor {
         let _ = in_fence;
     }
 
-    /// 判断某行是否在代码围栏内。
-    fn in_fence_at(&self, _line: usize) -> bool {
-        let mut in_fence = false;
-        for l in &self.lines {
-            if is_fence_line(l) {
-                in_fence = !in_fence;
-            }
-        }
-        in_fence
-    }
-
     /// 普通拆行（保持当前行其余部分，光标移到新行开头）。
     fn plain_newline(&mut self, line: usize, col: usize) {
         let head = self.lines[line][..col].to_string();
@@ -531,6 +523,32 @@ impl Editor {
                 }
             }
         }
+        // FMT-03：标记符原子删除（`**`/`~~`/`==` 作为整体，`` ` `` / `*` 单个）。
+        // 代码围栏内不特殊处理。
+        if !self.in_fence_at(self.cursor_line) {
+            let (line, col) = (self.cursor_line, self.cursor_col);
+            if col > 0 {
+                let s = self.line(line).to_string();
+                let bytes = s.as_bytes();
+                let two = if col >= 2 { &s[col - 2..col] } else { "" };
+                if matches!(two, "**" | "~~" | "==") {
+                    self.lines[line].replace_range(col - 2..col, "");
+                    self.cursor_col -= 2;
+                    self.dirty = true;
+                    return;
+                }
+                let one = bytes[col - 1];
+                if one == b'`' || one == b'*' {
+                    let prev_same = col >= 2 && (bytes[col - 2] == one);
+                    if !prev_same {
+                        self.lines[line].replace_range(col - 1..col, "");
+                        self.cursor_col -= 1;
+                        self.dirty = true;
+                        return;
+                    }
+                }
+            }
+        }
         self.backspace();
     }
 
@@ -646,7 +664,6 @@ impl Editor {
     fn set_block_type(&mut self, t: BlockType) {
         let (line, _col) = (self.cursor_line, self.cursor_col);
         let cur = self.lines[line].clone();
-        let trimmed = cur.trim_start();
         match t {
             BlockType::Paragraph => {
                 let body = strip_block_prefix(&cur);
@@ -668,7 +685,7 @@ impl Editor {
                 }
             }
             BlockType::CodeBlock => {
-                if is_fence_line(&cur) {
+                if crate::editor::is_fence_line(&cur) {
                     // 已是围栏
                 } else {
                     let body = strip_block_prefix(&cur);
@@ -807,13 +824,6 @@ fn strip_block_prefix(line: &str) -> String {
     } else {
         line.to_string()
     }
-}
-
-/// 判断是否为代码围栏行。
-fn is_fence_line(line: &str) -> bool {
-    let t = line.trim_start();
-    let f = t.chars().next();
-    matches!(f, Some('`') | Some('~')) && t.chars().take_while(|&c| c == f.unwrap()).count() >= 3
 }
 
 /// 从行首提取有序列表起始序号。
@@ -1394,4 +1404,160 @@ mod tests {
             }
         }
     }
+    // ================= NAV-02 视觉列 =================
+
+    #[test]
+    fn up_down_preserves_visual_column() {
+        // 从 "abcdef" 第 3 列向下到短行（截断到行尾），再向上恢复记忆列
+        let mut e = setup("abc|def\nab");
+        e.apply(&mv(Direction::Down, false));
+        assert_eq!(render(&e), "abcdef\nab|");
+        e.apply(&mv(Direction::Up, false));
+        assert_eq!(render(&e), "abc|def\nab");
+    }
+
+    #[test]
+    fn up_down_across_marked_lines() {
+        // **ab** 显示宽度 2，向上对齐到 "12345" 的第 2 列
+        let mut e = setup("12345\n**ab**|");
+        e.apply(&mv(Direction::Up, false));
+        assert_eq!(render(&e), "12|345\n**ab**");
+    }
+
+    // ================= FMT-03 标记原子删除 =================
+
+    #[test]
+    fn backspace_deletes_marker_pair() {
+        let mut e = setup("**|");
+        e.apply(&Op::Backspace);
+        assert_eq!(render(&e), "|");
+        let mut e2 = setup("~~|");
+        e2.apply(&Op::Backspace);
+        assert_eq!(render(&e2), "|");
+        let mut e3 = setup("==|");
+        e3.apply(&Op::Backspace);
+        assert_eq!(render(&e3), "|");
+    }
+
+    #[test]
+    fn backspace_deletes_single_marker() {
+        let mut e = setup("`|");
+        e.apply(&Op::Backspace);
+        assert_eq!(render(&e), "|");
+        let mut e2 = setup("*|");
+        e2.apply(&Op::Backspace);
+        assert_eq!(render(&e2), "|");
+    }
+
+    #[test]
+    fn backspace_marker_keeps_other_side() {
+        let mut e = setup("**|bold**");
+        e.apply(&Op::Backspace);
+        assert_eq!(render(&e), "|bold**");
+    }
+
+    #[test]
+    fn backspace_inside_code_fence_is_plain() {
+        let mut e = setup("```\n**|\n```");
+        e.cursor_line = 1;
+        e.cursor_col = 2;
+        e.apply(&Op::Backspace);
+        assert_eq!(render(&e), "```\n*|\n```");
+    }
+
+    // ================= 引用/标题/代码围栏 回车与 Tab =================
+
+    #[test]
+    fn quote_enter_empty_exits() {
+        let mut e = setup("> |");
+        e.apply(&Op::Newline);
+        assert_eq!(render(&e), "> \n|");
+    }
+
+    #[test]
+    fn heading_enter_splits_plain() {
+        let mut e = setup("## title|");
+        e.apply(&Op::Newline);
+        assert_eq!(render(&e), "## title\n|");
+    }
+
+    #[test]
+    fn enter_in_code_fence_plain_newline() {
+        let mut e = setup("```\nlet x = 1|\n```");
+        e.cursor_line = 1;
+        e.cursor_col = 9;
+        e.apply(&Op::Newline);
+        assert_eq!(render(&e), "```\nlet x = 1\n|\n```");
+    }
+
+    #[test]
+    fn tab_in_code_fence_inserts_spaces() {
+        let mut e = setup("```\n|code\n```");
+        e.cursor_line = 1;
+        e.apply(&Op::Tab);
+        assert_eq!(render(&e), "```\n    |code\n```");
+    }
+
+    // ================= 撤销边界 =================
+
+    #[test]
+    fn undo_input_rule_list() {
+        let mut e = setup("|");
+        e.apply(&ty("-"));
+        e.apply(&ty(" "));
+        e.apply(&ty("item"));
+        assert_eq!(e.undo_depth(), 1);
+        e.apply(&Op::Undo);
+        assert_eq!(render(&e), "|");
+    }
+
+    #[test]
+    fn undo_paste_is_single_step() {
+        let mut e = setup("|");
+        e.apply(&Op::Paste("a\nb\nc".into()));
+        assert_eq!(e.undo_depth(), 1);
+        e.apply(&Op::Undo);
+        assert_eq!(render(&e), "|");
+    }
+
+    #[test]
+    fn formatting_is_undoable() {
+        let mut e = setup("abc|");
+        e.sel_start = Some((0, 0));
+        e.cursor_col = 3;
+        e.apply(&Op::ToggleMark(Mark::Bold));
+        assert_eq!(render(&e), "**abc**|");
+        e.apply(&Op::Undo);
+        assert_eq!(render(&e), "abc|");
+    }
+
+    // ================= 块类型 =================
+
+    #[test]
+    fn set_quote_block() {
+        let mut e = setup("hello|");
+        e.apply(&Op::SetBlockType(BlockType::Quote));
+        assert_eq!(render(&e), "> hello|");
+        e.apply(&Op::SetBlockType(BlockType::Paragraph));
+        assert_eq!(render(&e), "hello|");
+    }
+
+    #[test]
+    fn heading_empty_line_sets_marker() {
+        let mut e = setup("|");
+        e.apply(&Op::SetBlockType(BlockType::Heading(3)));
+        assert_eq!(render(&e), "### |");
+    }
+
+    // ================= 选区转列表 =================
+
+    #[test]
+    fn wrap_multi_line_ordered_list() {
+        let mut e = setup("a\nb|");
+        e.sel_start = Some((0, 0));
+        e.cursor_col = 1;
+        e.apply(&Op::WrapList(ListKind::Ordered));
+        assert_eq!(render(&e), "1. a\n2. b|");
+    }
+
 }
