@@ -514,6 +514,7 @@ impl Editor {
     }
 
     /// 水平移动或编辑时清除记忆列。
+    #[allow(dead_code)]
     pub fn clear_stick_col(&mut self) {
         self.stick_col = None;
     }
@@ -581,7 +582,7 @@ impl Editor {
             return;
         }
         let d = dcol.min(chars.len().saturating_sub(1));
-        let (mut start, mut end) = if chars[d].is_whitespace() {
+        let (start, mut end) = if chars[d].is_whitespace() {
             let mut j = d;
             while j > 0 && chars[j - 1].is_whitespace() {
                 j -= 1;

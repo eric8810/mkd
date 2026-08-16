@@ -77,6 +77,14 @@ pub enum Op {
     Redo,
     /// 粘贴文本（与 Type 相同，但标记为外部内容不触发输入规则）。
     Paste(String),
+    /// macOS 编辑键：删到行尾（Ctrl+K）。
+    DeleteToLineEnd,
+    /// 删到行首（Ctrl+U）。
+    DeleteToLineStart,
+    /// 删前一个词（Ctrl+W / Alt+Backspace）。
+    DeleteWordBack,
+    /// 删后一个词（Alt+Delete）。
+    DeleteWordForward,
 }
 
 // ---------------------------------------------------------------------------
@@ -204,6 +212,26 @@ impl Editor {
             Op::WrapList(kind) => {
                 self.begin_edit(false);
                 self.wrap_list(*kind);
+                self.end_edit(false);
+            }
+            Op::DeleteToLineEnd => {
+                self.begin_edit(false);
+                self.delete_to_line_end();
+                self.end_edit(false);
+            }
+            Op::DeleteToLineStart => {
+                self.begin_edit(false);
+                self.delete_to_line_start();
+                self.end_edit(false);
+            }
+            Op::DeleteWordBack => {
+                self.begin_edit(false);
+                self.delete_word_back();
+                self.end_edit(false);
+            }
+            Op::DeleteWordForward => {
+                self.begin_edit(false);
+                self.delete_word_forward();
                 self.end_edit(false);
             }
         }
@@ -575,6 +603,90 @@ impl Editor {
                 self.rule_state = RuleState::None;
             }
         }
+    }
+
+    // ---- macOS 编辑键（spec INP-12） ----
+
+    fn delete_to_line_end(&mut self) {
+        let (line, col) = (self.cursor_line, self.cursor_col);
+        self.lines[line].truncate(col);
+        self.dirty = true;
+    }
+
+    fn delete_to_line_start(&mut self) {
+        let (line, col) = (self.cursor_line, self.cursor_col);
+        self.lines[line].replace_range(..col, "");
+        self.cursor_col = 0;
+        self.dirty = true;
+    }
+
+    fn delete_word_back(&mut self) {
+        if self.sel_start.is_some() {
+            self.delete_selection();
+            self.dirty = true;
+            return;
+        }
+        let (line, col) = (self.cursor_line, self.cursor_col);
+        let s = self.line(line).to_string();
+        let bytes = s.as_bytes();
+        let mut i = col;
+        // 跳过词
+        while i > 0 {
+            let c = s[..i].chars().next_back().unwrap();
+            if c.is_whitespace() {
+                break;
+            }
+            i -= c.len_utf8();
+        }
+        let word_start = i;
+        // 跳过词前连续空白 → ws_start
+        while i > 0 {
+            let c = s[..i].chars().next_back().unwrap();
+            if !c.is_whitespace() {
+                break;
+            }
+            i -= c.len_utf8();
+        }
+        let ws_start = i;
+        // 保留一个分隔空格：删除 ws_start+1..col（若 ws_start 处是空白）
+        let del_start = if ws_start < word_start && bytes[ws_start].is_ascii_whitespace() {
+            ws_start + 1
+        } else {
+            ws_start
+        };
+        self.lines[line].replace_range(del_start..col, "");
+        self.cursor_col = del_start;
+        self.dirty = true;
+    }
+
+    fn delete_word_forward(&mut self) {
+        if self.sel_start.is_some() {
+            self.delete_selection();
+            self.dirty = true;
+            return;
+        }
+        let (line, col) = (self.cursor_line, self.cursor_col);
+        let s = self.line(line).to_string();
+        let len = s.len();
+        let mut i = col;
+        // 跳过空白
+        while i < len {
+            let c = s[i..].chars().next().unwrap();
+            if !c.is_whitespace() {
+                break;
+            }
+            i += c.len_utf8();
+        }
+        // 跳过词
+        while i < len {
+            let c = s[i..].chars().next().unwrap();
+            if c.is_whitespace() {
+                break;
+            }
+            i += c.len_utf8();
+        }
+        self.lines[line].replace_range(col..i, "");
+        self.dirty = true;
     }
 
     // ---- 格式化（spec 2.4） ----
@@ -1679,6 +1791,51 @@ mod tests {
         assert_eq!(p2, "H2O", "预览与编辑视图一致");
         let e3 = crate::editor::parse_line("E=mc^2^", false).display;
         assert_eq!(e3, "E=mc2");
+    }
+
+    // ================= macOS 编辑键（INP-12） =================
+
+    #[test]
+    fn ctrl_k_delete_to_line_end() {
+        let mut e = setup("hello |world");
+        e.cursor_col = 6;
+        e.apply(&Op::DeleteToLineEnd);
+        assert_eq!(render(&e), "hello |");
+    }
+
+    #[test]
+    fn ctrl_u_delete_to_line_start() {
+        let mut e = setup("hello |world");
+        e.cursor_col = 6;
+        e.apply(&Op::DeleteToLineStart);
+        assert_eq!(render(&e), "|world");
+    }
+
+    #[test]
+    fn ctrl_w_delete_word_back() {
+        let mut e = setup("hello world|");
+        e.apply(&Op::DeleteWordBack);
+        assert_eq!(render(&e), "hello |");
+        // 多空白
+        let mut e2 = setup("a   b|");
+        e2.apply(&Op::DeleteWordBack);
+        assert_eq!(render(&e2), "a |");
+    }
+
+    #[test]
+    fn alt_delete_delete_word_forward() {
+        let mut e = setup("|hello world");
+        e.apply(&Op::DeleteWordForward);
+        assert_eq!(render(&e), "| world");
+    }
+
+    #[test]
+    fn delete_to_line_undoable() {
+        let mut e = setup("hello |world");
+        e.cursor_col = 6;
+        e.apply(&Op::DeleteToLineEnd);
+        e.apply(&Op::Undo);
+        assert_eq!(render(&e), "hello |world");
     }
 
 }

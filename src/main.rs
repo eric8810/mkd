@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use gpui::{
     actions, App, Application, AnyElement, AsyncApp, Bounds, ClipboardItem, Context, EntityInputHandler,
+    ScrollHandle, point,
     FocusHandle, Focusable, FontWeight, KeyBinding, MouseButton, MouseDownEvent, Pixels,
     Point, Render, Timer, TitlebarOptions, UTF16Selection, WeakEntity, Window, WindowBounds,
     WindowOptions, div, prelude::*, px, size,
@@ -39,6 +40,7 @@ actions!(mkd_edit, [
     SelectLeft, SelectRight, SelectUp, SelectDown, SelectHome, SelectEnd,
     Backspace, Delete, Enter, Tab, ShiftTab, SelectAll, Copy, Cut, Paste,
     ToggleEdit, Save, Undo, Redo, HardBreak,
+    DeleteToLineEnd, DeleteToLineStart, DeleteWordBack, DeleteWordForward,
     ToggleBold, ToggleItalic, ToggleCode, ToggleStrike, InsertLink,
     SetParagraph, SetHeading1, SetHeading2, SetHeading3, SetCodeBlock, SetQuote,
     WrapBulletList, WrapOrderedList, WrapTaskList,
@@ -57,6 +59,7 @@ struct MarkdownView {
     edit_mode: bool,
     editor: Editor,
     focus_handle: FocusHandle,
+    scroll_handle: ScrollHandle,
 }
 
 impl MarkdownView {
@@ -75,6 +78,7 @@ impl MarkdownView {
             edit_mode: false,
             editor: Editor::new(""),
             focus_handle: focus,
+            scroll_handle: ScrollHandle::new(),
         }
     }
 
@@ -185,6 +189,24 @@ impl MarkdownView {
         }
     }
 
+    /// SCR-01：光标移出可视区时自动滚动跟随。
+    fn ensure_cursor_visible(&mut self, window: &mut Window) {
+        let Some(bounds) = self.editor.last_bounds else {
+            return;
+        };
+        let line_h = self.editor.line_height;
+        let y_top = bounds.top() + px(self.editor.cursor_line as f32 * line_h);
+        let y = y_top.to_f64() as f32;
+        let offset_y = self.scroll_handle.offset().y.to_f64() as f32;
+        let viewport_h = window.bounds().size.height.to_f64() as f32 - 60.0;
+        if y < offset_y {
+            self.scroll_handle.set_offset(point(px(0.0), px(y)));
+        } else if y + line_h > offset_y + viewport_h {
+            self.scroll_handle
+                .set_offset(point(px(0.0), px(y + line_h - viewport_h)));
+        }
+    }
+
     fn editor_toolbar(&self, t: &Theme) -> AnyElement {
         let label = if self.editor.dirty {
             "编辑模式 ● 未保存"
@@ -233,146 +255,201 @@ impl Render for MarkdownView {
                 .flex_col()
                 .key_context("mkd-editor")
                 .track_focus(&self.focus_handle)
-                .on_action(cx.listener(|this, _: &EditLeft, _w, cx| {
+                .on_action(cx.listener(|this, _: &EditLeft, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Move(ops::Direction::Left, false));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &EditRight, _w, cx| {
+                .on_action(cx.listener(|this, _: &EditRight, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Move(ops::Direction::Right, false));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &EditUp, _w, cx| {
+                .on_action(cx.listener(|this, _: &EditUp, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Move(ops::Direction::Up, false));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &EditDown, _w, cx| {
+                .on_action(cx.listener(|this, _: &EditDown, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Move(ops::Direction::Down, false));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &EditHome, _w, cx| {
+                .on_action(cx.listener(|this, _: &EditHome, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Move(ops::Direction::Home, false));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &EditEnd, _w, cx| {
+                .on_action(cx.listener(|this, _: &EditEnd, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Move(ops::Direction::End, false));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &SelectLeft, _w, cx| {
+                .on_action(cx.listener(|this, _: &SelectLeft, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Move(ops::Direction::Left, true));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &SelectRight, _w, cx| {
+                .on_action(cx.listener(|this, _: &SelectRight, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Move(ops::Direction::Right, true));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &SelectUp, _w, cx| {
+                .on_action(cx.listener(|this, _: &SelectUp, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Move(ops::Direction::Up, true));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &SelectDown, _w, cx| {
+                .on_action(cx.listener(|this, _: &SelectDown, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Move(ops::Direction::Down, true));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &SelectHome, _w, cx| {
+                .on_action(cx.listener(|this, _: &SelectHome, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Move(ops::Direction::Home, true));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &SelectEnd, _w, cx| {
+                .on_action(cx.listener(|this, _: &SelectEnd, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Move(ops::Direction::End, true));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &Backspace, _w, cx| {
+                .on_action(cx.listener(|this, _: &Backspace, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Backspace);
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &Delete, _w, cx| {
+                .on_action(cx.listener(|this, _: &Delete, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Delete);
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &Enter, _w, cx| {
+                .on_action(cx.listener(|this, _: &Enter, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Newline);
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &Tab, _w, cx| {
+                .on_action(cx.listener(|this, _: &Tab, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Tab);
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &SelectAll, _w, cx| {
+                .on_action(cx.listener(|this, _: &SelectAll, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::SelectAll);
                     cx.notify();
                 }))
                 .on_action(cx.listener(|this, _: &Copy, _w, cx| this.edit_copy(cx)))
                 .on_action(cx.listener(|this, _: &Cut, _w, cx| this.edit_cut(cx)))
                 .on_action(cx.listener(|this, _: &Paste, _w, cx| this.edit_paste(cx)))
-                .on_action(cx.listener(|this, _: &ShiftTab, _w, cx| {
+                .on_action(cx.listener(|this, _: &ShiftTab, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::ShiftTab);
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &Undo, _w, cx| {
+                .on_action(cx.listener(|this, _: &Undo, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Undo);
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &Redo, _w, cx| {
+                .on_action(cx.listener(|this, _: &Redo, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::Redo);
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &HardBreak, _w, cx| {
+                .on_action(cx.listener(|this, _: &HardBreak, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::HardBreak);
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &ToggleBold, _w, cx| {
+                .on_action(cx.listener(|this, _: &DeleteToLineEnd, window, cx| {
+                    this.ensure_cursor_visible(window);
+                    this.editor.apply(&ops::Op::DeleteToLineEnd);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &DeleteToLineStart, window, cx| {
+                    this.ensure_cursor_visible(window);
+                    this.editor.apply(&ops::Op::DeleteToLineStart);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &DeleteWordBack, window, cx| {
+                    this.ensure_cursor_visible(window);
+                    this.editor.apply(&ops::Op::DeleteWordBack);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &DeleteWordForward, window, cx| {
+                    this.ensure_cursor_visible(window);
+                    this.editor.apply(&ops::Op::DeleteWordForward);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &ToggleBold, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::ToggleMark(ops::Mark::Bold));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &ToggleItalic, _w, cx| {
+                .on_action(cx.listener(|this, _: &ToggleItalic, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::ToggleMark(ops::Mark::Italic));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &ToggleCode, _w, cx| {
+                .on_action(cx.listener(|this, _: &ToggleCode, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::ToggleMark(ops::Mark::Code));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &ToggleStrike, _w, cx| {
+                .on_action(cx.listener(|this, _: &ToggleStrike, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::ToggleMark(ops::Mark::Strike));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &InsertLink, _w, cx| {
+                .on_action(cx.listener(|this, _: &InsertLink, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::InsertLink);
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &SetParagraph, _w, cx| {
+                .on_action(cx.listener(|this, _: &SetParagraph, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::SetBlockType(ops::BlockType::Paragraph));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &SetHeading1, _w, cx| {
+                .on_action(cx.listener(|this, _: &SetHeading1, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::SetBlockType(ops::BlockType::Heading(1)));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &SetHeading2, _w, cx| {
+                .on_action(cx.listener(|this, _: &SetHeading2, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::SetBlockType(ops::BlockType::Heading(2)));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &SetHeading3, _w, cx| {
+                .on_action(cx.listener(|this, _: &SetHeading3, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::SetBlockType(ops::BlockType::Heading(3)));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &SetCodeBlock, _w, cx| {
+                .on_action(cx.listener(|this, _: &SetCodeBlock, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::SetBlockType(ops::BlockType::CodeBlock));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &SetQuote, _w, cx| {
+                .on_action(cx.listener(|this, _: &SetQuote, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::SetBlockType(ops::BlockType::Quote));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &WrapBulletList, _w, cx| {
+                .on_action(cx.listener(|this, _: &WrapBulletList, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::WrapList(ops::ListKind::Bullet));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &WrapOrderedList, _w, cx| {
+                .on_action(cx.listener(|this, _: &WrapOrderedList, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::WrapList(ops::ListKind::Ordered));
                     cx.notify();
                 }))
-                .on_action(cx.listener(|this, _: &WrapTaskList, _w, cx| {
+                .on_action(cx.listener(|this, _: &WrapTaskList, window, cx| {
+                    this.ensure_cursor_visible(window);
                     this.editor.apply(&ops::Op::WrapList(ops::ListKind::Task));
                     cx.notify();
                 }))
@@ -406,13 +483,14 @@ impl Render for MarkdownView {
                         cx.notify();
                     }
                 }))
-                .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, _w, cx| {
+                .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
                     // 拖选：按住左键移动扩展选区
                     if let Some(anchor) = this.editor.drag_anchor {
                         if let Some((line, dcol)) = this.editor.pos_for_point(ev.position) {
                             this.editor.cursor_line = line;
                             this.editor.cursor_col = this.editor.source_col_for_display(line, dcol);
                             this.editor.sel_start = Some(anchor);
+                            this.ensure_cursor_visible(window);
                             cx.notify();
                         }
                     }
@@ -428,6 +506,7 @@ impl Render for MarkdownView {
                         .id("editor-scroll")
                         .flex_1()
                         .overflow_y_scroll()
+                        .track_scroll(&self.scroll_handle)
                         .child(
                             div()
                                 .w_full()
@@ -794,7 +873,7 @@ fn main() {
                         &["放弃并退出", "取消"],
                         cx,
                     );
-                    cx.spawn(|_this: WeakEntity<MarkdownView>, cx: &mut AsyncApp| { let mut cx = cx.clone(); async move {
+                    cx.spawn(|_this: WeakEntity<MarkdownView>, cx: &mut AsyncApp| { let cx = cx.clone(); async move {
                         if answer.await == Ok(0) {
                             cx.update(|cx| cx.quit()).ok();
                         }
@@ -860,6 +939,14 @@ fn main() {
             KeyBinding::new("cmd-shift-8", WrapBulletList, Some("mkd-editor")),
             KeyBinding::new("cmd-shift-9", WrapOrderedList, Some("mkd-editor")),
             KeyBinding::new("cmd-shift-7", WrapTaskList, Some("mkd-editor")),
+            // macOS 编辑键（INP-12）
+            KeyBinding::new("ctrl-h", Backspace, Some("mkd-editor")),
+            KeyBinding::new("ctrl-d", Delete, Some("mkd-editor")),
+            KeyBinding::new("ctrl-k", DeleteToLineEnd, Some("mkd-editor")),
+            KeyBinding::new("ctrl-u", DeleteToLineStart, Some("mkd-editor")),
+            KeyBinding::new("ctrl-w", DeleteWordBack, Some("mkd-editor")),
+            KeyBinding::new("alt-backspace", DeleteWordBack, Some("mkd-editor")),
+            KeyBinding::new("alt-delete", DeleteWordForward, Some("mkd-editor")),
         ]);
     });
 }
