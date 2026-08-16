@@ -140,6 +140,22 @@ impl MarkdownView {
             self.editor = Editor::new(&self.raw_source);
             self.edit_mode = true;
             window.focus(&self.focus_handle);
+            // NAV-10：光标闪烁定时器
+            let this = cx.entity().downgrade();
+            cx.spawn(|_, cx: &mut AsyncApp| {
+                let mut cx = cx.clone();
+                async move {
+                    loop {
+                        Timer::after(Duration::from_millis(530)).await;
+                        this.update(&mut cx, |view, cx| {
+                            view.editor.blink_on = !view.editor.blink_on;
+                            cx.notify();
+                        })
+                        .ok();
+                    }
+                }
+            })
+            .detach();
         }
         cx.notify();
     }

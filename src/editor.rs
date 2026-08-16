@@ -400,6 +400,8 @@ pub struct Editor {
     pub stick_col: Option<usize>,
     /// 拖选锚点（SEL-02）：按下时的光标位置。
     pub drag_anchor: Option<(usize, usize)>,
+    /// 光标闪烁状态（NAV-10）。
+    pub blink_on: bool,
 }
 
 impl Editor {
@@ -425,6 +427,7 @@ impl Editor {
             pending_marks: Vec::new(),
             stick_col: None,
             drag_anchor: None,
+            blink_on: true,
         }
     }
 
@@ -1019,7 +1022,7 @@ where
             let shape = window
                 .text_system()
                 .shape_line(parsed.display.clone().into(), px(font_size), &runs, None);
-            if li == cursor_line {
+            if li == cursor_line && self.input.read(cx).editor().blink_on {
                 let dcol = self
                     .input
                     .read(cx)
