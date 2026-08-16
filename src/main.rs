@@ -10,6 +10,7 @@
 //!   cmd-s   save (edit mode)
 
 mod editor;
+mod html2md;
 mod ops;
 mod parse;
 mod render;
@@ -51,6 +52,24 @@ actions!(mkd_edit, [
 /// Files handed to the app by macOS (Finder double-click / `open -a`) land here,
 /// then the view's poll loop picks them up.
 static PENDING_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// CLP-05：从系统剪贴板读取 HTML 格式（GPUI 只暴露 Text/Image，需 objc 直读）。
+#[cfg(target_os = "macos")]
+fn read_clipboard_html() -> Option<String> {
+    use objc2::rc::autoreleasepool;
+    use objc2_app_kit::NSPasteboard;
+    use objc2_foundation::NSString;
+    autoreleasepool(|_| {
+        let pb = NSPasteboard::generalPasteboard();
+        let html = pb.stringForType(&NSString::from_str("public.html"));
+        html.as_deref().map(|s| s.to_string())
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_clipboard_html() -> Option<String> {
+    None
+}
 
 struct MarkdownView {
     path: Option<PathBuf>,
@@ -321,6 +340,21 @@ impl MarkdownView {
         }
     }
     fn edit_paste(&mut self, cx: &mut Context<Self>) {
+        // CLP-05：剪贴板含 HTML 时转 markdown 粘贴
+        #[cfg(target_os = "macos")]
+        {
+            let html = read_clipboard_html();
+            if let Some(html) = html {
+                if html.contains('<') {
+                    let md = html2md::html_to_md(&html);
+                    if !md.trim().is_empty() {
+                        self.editor.apply(&ops::Op::Paste(md));
+                        cx.notify();
+                        return;
+                    }
+                }
+            }
+        }
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             self.editor.apply(&ops::Op::Paste(text));
             cx.notify();
@@ -358,7 +392,7 @@ impl MarkdownView {
             let mut start = 0;
             while let Some(rel) = chars[start..]
                 .iter()
-                .position(|&c| line[start..].starts_with(self.find_query.as_str()))
+                .position(|_| line[start..].starts_with(self.find_query.as_str()))
             {
                 let col = start + rel;
                 // 校验该字符位置确实匹配 query（避免跨码点错位）
