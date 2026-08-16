@@ -8,9 +8,16 @@
 
 - macOS 原生窗口（Metal 渲染，Retina 适配），中文混排友好
 - **所见即所得编辑**（`Cmd+E` 切换）：直接在渲染视图上编辑，粗体 / 斜体 / 标题 / 列表 / 代码块即时显示
-- 编辑时实时行级解析：`**粗体**`、`*斜体*`、`***粗斜体***`、`` `行内代码` ``、`~~删除线~~`、`==高亮==`、`[链接](url)` 直接显示渲染效果
-- `Cmd+S` 保存，未保存时显示 `●` 标记
-- `Cmd+Q` 退出，`Cmd+R` 重新加载（预览模式）
+- 行内实时解析：`**粗体**`、`*斜体*`、`***粗斜体***`、`` `行内代码` ``、`~~删除线~~`、`==高亮==`、`~下标~`、`^上标^`、`[链接](url)` 直接显示渲染效果
+- **撤销/重做**：连续键入合并为一步、redo 栈、光标恢复
+- **输入规则**：`- ` / `1. ` / `# ` / `> ` / ` ``` ` / `---` 自动识别为块结构，Backspace 可回退
+- **列表行为**：回车续行、空项退出、Tab 缩进 / Shift+Tab 提升、有序序号自动递增
+- **格式化命令**：Cmd+B/I/Code/Strike 包裹与去包裹、光标处输入态、Cmd+K 链接、块类型切换（Cmd+Alt+1-6/C/Q）、选区转列表
+- **段落语义**：段落中回车自动空行分隔，Shift+Enter 硬换行
+- **选区**：拖选、双击选词、三击选行、Shift 扩展
+- **光标**：上下移动记忆列（stick column）、自动滚动跟随、闪烁
+- **macOS 编辑键**：Ctrl+H/D/K/U/W、Alt+Backspace/Delete
+- `Cmd+S` 保存（未保存 `●` 标记），`Cmd+Q` 未保存确认
 - 支持 Finder 打开：双击 .md 文件或用 `open -a mkd 文件.md`（冷启动 / 热启动均可）
 
 ## VitePress Markdown 支持
@@ -50,10 +57,20 @@ open -a dist/mkd.app 文件.md            # 通过 Finder / Launch Services 打�
 | ---- | ---- |
 | `Cmd+E` | 编辑 / 预览切换 |
 | `Cmd+S` | 保存（编辑模式） |
-| `Cmd+Q` | 退出 |
+| `Cmd+Z` / `Cmd+Shift+Z` / `Cmd+Y` | 撤销 / 重做 |
+| `Cmd+B` / `Cmd+I` / `Cmd+\`` / `Cmd+Shift+X` | 加粗 / 斜体 / 代码 / 删除线 |
+| `Cmd+K` | 插入链接 |
+| `Cmd+Alt+0-6` | 段落 / 标题 1-6 |
+| `Cmd+Alt+C` / `Cmd+Alt+Q` | 代码块 / 引用 |
+| `Cmd+Shift+7/8/9` | 任务 / 无序 / 有序列表 |
+| `Cmd+Q` | 退出（未保存确认） |
 | `Cmd+R` | 重新加载文件（预览模式） |
-| 方向键 / `Shift`+方向键 | 移动光标 / 扩展选区 |
+| `Enter` / `Shift+Enter` | 段落回车 / 硬换行 |
+| `Tab` / `Shift+Tab` | 列表缩进 / 提升 |
+| `Ctrl+H/D/K/U/W`、`Alt+Backspace/Delete` | macOS 编辑键 |
+| 方向键 / `Shift`+方向键 | 移动光标 / 扩展选区（记忆列） |
 | `Cmd+A` / `Cmd+C` / `Cmd+X` / `Cmd+V` | 全选 / 复制 / 剪切 / 粘贴 |
+| 双击 / 三击 | 选词 / 选行 |
 
 ## 技术栈
 
@@ -63,6 +80,7 @@ open -a dist/mkd.app 文件.md            # 通过 Finder / Launch Services 打�
 | [pulldown-cmark](https://crates.io/crates/pulldown-cmark) 0.13 | CommonMark / GFM / 扩展解析 |
 | [emojis](https://crates.io/crates/emojis) 0.9 | Emoji 短代码查询 |
 | 编辑器 | 自写行内解析器（渲染文本 ↔ 源码映射）+ `EntityInputHandler`（IME 支持） |
+| 测试 | 100 个单元测试：Op 模型 / 撤销 / 输入规则 / 列表 / 格式化 / 选区 / 渲染一致性对照 |
 
 ## 体积优化
 
