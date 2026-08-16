@@ -10,6 +10,7 @@
 //!   cmd-s   save (edit mode)
 
 mod editor;
+mod ops;
 mod parse;
 mod render;
 mod theme;
@@ -36,8 +37,11 @@ actions!(mdk, [Quit, Reload]);
 actions!(mkd_edit, [
     EditLeft, EditRight, EditUp, EditDown, EditHome, EditEnd,
     SelectLeft, SelectRight, SelectUp, SelectDown, SelectHome, SelectEnd,
-    Backspace, Delete, Enter, Tab, SelectAll, Copy, Cut, Paste,
-    ToggleEdit, Save,
+    Backspace, Delete, Enter, Tab, ShiftTab, SelectAll, Copy, Cut, Paste,
+    ToggleEdit, Save, Undo, Redo, HardBreak,
+    ToggleBold, ToggleItalic, ToggleCode, ToggleStrike, InsertLink,
+    SetParagraph, SetHeading1, SetHeading2, SetHeading3, SetCodeBlock, SetQuote,
+    WrapBulletList, WrapOrderedList, WrapTaskList,
 ]);
 
 /// Files handed to the app by macOS (Finder double-click / `open -a`) land here,
@@ -295,6 +299,78 @@ impl Render for MarkdownView {
                 .on_action(cx.listener(|this, _: &Copy, _w, cx| this.edit_copy(cx)))
                 .on_action(cx.listener(|this, _: &Cut, _w, cx| this.edit_cut(cx)))
                 .on_action(cx.listener(|this, _: &Paste, _w, cx| this.edit_paste(cx)))
+                .on_action(cx.listener(|this, _: &ShiftTab, _w, cx| {
+                    this.editor.apply(&ops::Op::ShiftTab);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &Undo, _w, cx| {
+                    this.editor.apply(&ops::Op::Undo);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &Redo, _w, cx| {
+                    this.editor.apply(&ops::Op::Redo);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &HardBreak, _w, cx| {
+                    this.editor.apply(&ops::Op::HardBreak);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &ToggleBold, _w, cx| {
+                    this.editor.apply(&ops::Op::ToggleMark(ops::Mark::Bold));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &ToggleItalic, _w, cx| {
+                    this.editor.apply(&ops::Op::ToggleMark(ops::Mark::Italic));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &ToggleCode, _w, cx| {
+                    this.editor.apply(&ops::Op::ToggleMark(ops::Mark::Code));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &ToggleStrike, _w, cx| {
+                    this.editor.apply(&ops::Op::ToggleMark(ops::Mark::Strike));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &InsertLink, _w, cx| {
+                    this.editor.apply(&ops::Op::InsertLink);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SetParagraph, _w, cx| {
+                    this.editor.apply(&ops::Op::SetBlockType(ops::BlockType::Paragraph));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SetHeading1, _w, cx| {
+                    this.editor.apply(&ops::Op::SetBlockType(ops::BlockType::Heading(1)));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SetHeading2, _w, cx| {
+                    this.editor.apply(&ops::Op::SetBlockType(ops::BlockType::Heading(2)));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SetHeading3, _w, cx| {
+                    this.editor.apply(&ops::Op::SetBlockType(ops::BlockType::Heading(3)));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SetCodeBlock, _w, cx| {
+                    this.editor.apply(&ops::Op::SetBlockType(ops::BlockType::CodeBlock));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &SetQuote, _w, cx| {
+                    this.editor.apply(&ops::Op::SetBlockType(ops::BlockType::Quote));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &WrapBulletList, _w, cx| {
+                    this.editor.apply(&ops::Op::WrapList(ops::ListKind::Bullet));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &WrapOrderedList, _w, cx| {
+                    this.editor.apply(&ops::Op::WrapList(ops::ListKind::Ordered));
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &WrapTaskList, _w, cx| {
+                    this.editor.apply(&ops::Op::WrapList(ops::ListKind::Task));
+                    cx.notify();
+                }))
                 .on_action(cx.listener(|this, _: &ToggleEdit, w, cx| this.toggle_edit(w, cx)))
                 .on_action(cx.listener(|this, _: &Save, _w, cx| this.save(cx)))
                 .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _w, cx| {
@@ -522,7 +598,7 @@ impl EntityInputHandler for MarkdownView {
         if let Some(r) = range {
             self.editor.replace_utf16_range(r);
         }
-        self.editor.insert_text(text);
+        self.editor.apply(&ops::Op::Type(text.to_string()));
         cx.notify();
     }
 
@@ -695,6 +771,25 @@ fn main() {
             KeyBinding::new("cmd-c", Copy, Some("mkd-editor")),
             KeyBinding::new("cmd-x", Cut, Some("mkd-editor")),
             KeyBinding::new("cmd-v", Paste, Some("mkd-editor")),
+            KeyBinding::new("cmd-z", Undo, Some("mkd-editor")),
+            KeyBinding::new("cmd-shift-z", Redo, Some("mkd-editor")),
+            KeyBinding::new("cmd-y", Redo, Some("mkd-editor")),
+            KeyBinding::new("shift-enter", HardBreak, Some("mkd-editor")),
+            KeyBinding::new("shift-tab", ShiftTab, Some("mkd-editor")),
+            KeyBinding::new("cmd-b", ToggleBold, Some("mkd-editor")),
+            KeyBinding::new("cmd-i", ToggleItalic, Some("mkd-editor")),
+            KeyBinding::new("cmd-`", ToggleCode, Some("mkd-editor")),
+            KeyBinding::new("cmd-shift-x", ToggleStrike, Some("mkd-editor")),
+            KeyBinding::new("cmd-k", InsertLink, Some("mkd-editor")),
+            KeyBinding::new("cmd-alt-0", SetParagraph, Some("mkd-editor")),
+            KeyBinding::new("cmd-alt-1", SetHeading1, Some("mkd-editor")),
+            KeyBinding::new("cmd-alt-2", SetHeading2, Some("mkd-editor")),
+            KeyBinding::new("cmd-alt-3", SetHeading3, Some("mkd-editor")),
+            KeyBinding::new("cmd-alt-c", SetCodeBlock, Some("mkd-editor")),
+            KeyBinding::new("cmd-alt-q", SetQuote, Some("mkd-editor")),
+            KeyBinding::new("cmd-shift-8", WrapBulletList, Some("mkd-editor")),
+            KeyBinding::new("cmd-shift-9", WrapOrderedList, Some("mkd-editor")),
+            KeyBinding::new("cmd-shift-7", WrapTaskList, Some("mkd-editor")),
         ]);
     });
 }

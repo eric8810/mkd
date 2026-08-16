@@ -53,6 +53,16 @@ pub enum LineStyle {
     Rule,
 }
 
+/// 编辑器的纯文档状态快照（撤销/重做用）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditorSnapshot {
+    pub lines: Vec<String>,
+    pub cursor_line: usize,
+    pub cursor_col: usize,
+    pub sel_start: Option<(usize, usize)>,
+    pub marked: Option<(usize, usize)>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ParsedLine {
     /// 渲染显示文本（去标记）。
@@ -132,26 +142,26 @@ fn detect_line_style(src: &str) -> (LineStyle, usize) {
             return (LineStyle::Heading(n as u8), n + extra);
         }
     }
-    // 引用
-    if src.starts_with('>') {
-        let after = &src[1..];
+    // 引用 / 列表：支持缩进（嵌套）
+    let trimmed = src.trim_start();
+    let lead = src.len() - trimmed.len();
+    if trimmed.starts_with('>') {
+        let after = &trimmed[1..];
         let plen = 1 + if after.starts_with(' ') { 1 } else { 0 };
-        return (LineStyle::Quote, plen);
+        return (LineStyle::Quote, lead + plen);
     }
-    // 无序列表
     for marker in ["- ", "* ", "+ "] {
-        if src.starts_with(marker) {
-            return (LineStyle::Bullet, marker.len());
+        if trimmed.starts_with(marker) {
+            return (LineStyle::Bullet, lead + marker.len());
         }
     }
-    // 有序列表
-    let bytes = src.as_bytes();
+    let bytes = trimmed.as_bytes();
     let mut i = 0;
     while i < bytes.len() && bytes[i].is_ascii_digit() {
         i += 1;
     }
     if i > 0 && i < bytes.len() && (bytes[i] == b'.' || bytes[i] == b')') && i + 1 < bytes.len() && bytes[i + 1] == b' ' {
-        return (LineStyle::Ordered, i + 2);
+        return (LineStyle::Ordered, lead + i + 2);
     }
     (LineStyle::Plain, 0)
 }
@@ -356,6 +366,14 @@ pub struct Editor {
     pub font_size: f32,
     pub last_shapes: Vec<Option<ShapedLine>>,
     pub last_bounds: Option<Bounds<Pixels>>,
+    // 撤销/重做
+    pub undo_stack: Vec<EditorSnapshot>,
+    pub redo_stack: Vec<EditorSnapshot>,
+    pub merge_undo: bool,
+    pub last_op: Option<crate::ops::LastOp>,
+    pub last_op_at: Option<std::time::Instant>,
+    pub rule_state: crate::ops::RuleState,
+    pub pending_marks: Vec<crate::ops::Mark>,
 }
 
 impl Editor {
@@ -372,6 +390,13 @@ impl Editor {
             font_size: 15.0,
             last_shapes: Vec::new(),
             last_bounds: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            merge_undo: false,
+            last_op: None,
+            last_op_at: None,
+            rule_state: crate::ops::RuleState::None,
+            pending_marks: Vec::new(),
         }
     }
 
@@ -468,7 +493,7 @@ impl Editor {
             .char_indices()
             .rev()
             .next()
-            .map(|(i, c)| i + c.len_utf8())
+            .map(|(i, _c)| i)
             .unwrap_or(0)
     }
 
@@ -480,7 +505,7 @@ impl Editor {
         }
     }
 
-    fn selection_bounds(&self) -> Option<((usize, usize), (usize, usize))> {
+    pub fn selection_bounds(&self) -> Option<((usize, usize), (usize, usize))> {
         let (sl, sc) = self.sel_start?;
         let cur = (self.cursor_line, self.cursor_col);
         if (sl, sc) == cur {
