@@ -10,6 +10,8 @@
 //!   cmd-s   save (edit mode)
 
 mod editor;
+#[cfg(target_os = "macos")]
+mod filedrop;
 mod html2md;
 mod ops;
 mod parse;
@@ -544,6 +546,16 @@ impl MarkdownView {
 
 impl Render for MarkdownView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(target_os = "macos")]
+        {
+            use raw_window_handle::HasWindowHandle;
+            if let Ok(h) = _window.window_handle() {
+                if let raw_window_handle::RawWindowHandle::AppKit(ah) = h.as_raw() {
+                    crate::filedrop::ensure_installed(ah.ns_view.as_ptr() as *mut std::ffi::c_void);
+                }
+            }
+        }
+
         let t = Theme::light();
 
         if self.edit_mode {
