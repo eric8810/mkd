@@ -44,6 +44,8 @@ actions!(mkd_edit, [
     ToggleBold, ToggleItalic, ToggleCode, ToggleStrike, InsertLink,
     SetParagraph, SetHeading1, SetHeading2, SetHeading3, SetCodeBlock, SetQuote,
     WrapBulletList, WrapOrderedList, WrapTaskList,
+    Find, FindNext, FindClose,
+    WordLeft, WordRight,
 ]);
 
 /// Files handed to the app by macOS (Finder double-click / `open -a`) land here,
@@ -60,6 +62,14 @@ struct MarkdownView {
     editor: Editor,
     focus_handle: FocusHandle,
     scroll_handle: ScrollHandle,
+    // 查找（FND-01）
+    find_open: bool,
+    find_redirect: bool,
+    find_query: String,
+    find_index: usize,
+    find_matches: Vec<(usize, usize)>,
+    /// SAV-07：待确认的新文件路径（有未保存更改时）。
+    pending_open: Option<PathBuf>,
 }
 
 impl MarkdownView {
@@ -79,6 +89,12 @@ impl MarkdownView {
             editor: Editor::new(""),
             focus_handle: focus,
             scroll_handle: ScrollHandle::new(),
+            find_open: false,
+            find_redirect: false,
+            find_query: String::new(),
+            find_index: 0,
+            find_matches: Vec::new(),
+            pending_open: None,
         }
     }
 
@@ -94,7 +110,12 @@ impl MarkdownView {
     }
 
     fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.load_path(path);
+        if self.edit_mode && self.editor.dirty {
+            // SAV-07：有未保存更改，先确认再切换
+            self.pending_open = Some(path);
+        } else {
+            self.load_path(path);
+        }
         cx.notify();
     }
 
@@ -164,7 +185,11 @@ impl MarkdownView {
         if !self.edit_mode {
             return;
         }
-        let source = self.editor.to_source();
+        let mut source = self.editor.to_source();
+        // SAV-03：保留原文件尾部换行（往返保真）
+        if self.raw_source.ends_with('\n') && !source.ends_with('\n') {
+            source.push('\n');
+        }
         let saved = self
             .path
             .as_ref()
@@ -173,7 +198,11 @@ impl MarkdownView {
         if saved {
             self.raw_source = source;
             self.editor.dirty = false;
+            self.error = None;
             self.reparse();
+        } else {
+            // SAV-06：保存失败明确报错，编辑内容保留在内存
+            self.error = Some("保存失败：无法写入文件（磁盘只读或已满？）。编辑内容未丢失。".into());
         }
         cx.notify();
     }
@@ -223,6 +252,134 @@ impl MarkdownView {
         }
     }
 
+    /// FND-01：计算匹配位置（字符索引，供渲染与跳转）。
+    fn find_all(&mut self) {
+        self.editor.find_matches.clear();
+        self.editor.find_len = self.find_query.chars().count();
+        if self.find_query.is_empty() {
+            self.editor.find_index = 0;
+            return;
+        }
+        for (li, line) in self.editor.lines.iter().enumerate() {
+            let chars: Vec<char> = line.chars().collect();
+            let mut start = 0;
+            while let Some(rel) = chars[start..]
+                .iter()
+                .position(|&c| line[start..].starts_with(self.find_query.as_str()))
+            {
+                let col = start + rel;
+                // 校验该字符位置确实匹配 query（避免跨码点错位）
+                let byte_col = chars[..col].iter().map(|c| c.len_utf8()).sum::<usize>();
+                if line[byte_col..].starts_with(self.find_query.as_str()) {
+                    self.editor.find_matches.push((li, col));
+                }
+                start = col + 1;
+                if start >= chars.len() {
+                    break;
+                }
+            }
+        }
+        if self.editor.find_index >= self.editor.find_matches.len() {
+            self.editor.find_index = self.editor.find_matches.len().saturating_sub(1);
+        }
+    }
+
+    /// 跳到下一个/上一个匹配。
+    fn find_jump(&mut self, window: &mut Window, dir: i32) {
+        let n = self.editor.find_matches.len();
+        if n == 0 {
+            return;
+        }
+        self.editor.find_index =
+            ((self.editor.find_index as i32 + dir).rem_euclid(n as i32)) as usize;
+        let (line, col) = self.editor.find_matches[self.editor.find_index];
+        self.editor.cursor_line = line;
+        self.editor.cursor_col = col;
+        self.editor.find_len = self.find_query.chars().count();
+        self.ensure_cursor_visible(window);
+    }
+
+    fn find_open(&mut self) {
+        self.find_open = true;
+        self.find_redirect = true;
+        self.find_all();
+    }
+
+    /// 用当前选区填充查找词（标准编辑器行为）。
+    fn find_with_selection(&mut self) {
+        let sel = self.editor.selection_bounds();
+        if let Some(((sl, sc), (el, ec))) = sel {
+            if (sl, sc) != (el, ec) {
+                let mut q = self.editor.line(sl)[sc..el.min(self.editor.line(sl).len())].to_string();
+                if el > sl {
+                    // 跨行：取首行剩余 + 末行开头
+                    q = self.editor.line(sl)[sc..].to_string();
+                    q.push_str(&self.editor.line(el)[..ec.min(self.editor.line(el).len())]);
+                }
+                self.find_query = q;
+            }
+        }
+        self.find_open();
+    }
+
+    fn find_close(&mut self) {
+        self.find_open = false;
+        self.find_redirect = false;
+    }
+
+    /// 查找条渲染。
+    fn find_bar(&self, t: &Theme) -> AnyElement {
+        let count = self.editor.find_matches.len();
+        let status = if self.find_query.is_empty() {
+            "输入查找内容".to_string()
+        } else if count == 0 {
+            "无匹配".to_string()
+        } else {
+            format!("{}/{}", self.find_index + 1, count)
+        };
+        div()
+            .w_full()
+            .px_4()
+            .py_1()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .border_b_1()
+            .border_color(t.rule)
+            .bg(t.info_bg)
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(t.info_accent)
+                    .child("🔍".to_string()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(13.0))
+                    .text_color(t.fg)
+                    .child(if self.find_query.is_empty() {
+                        "输入查找内容".to_string()
+                    } else {
+                        self.find_query.clone()
+                    }),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(t.muted)
+                    .child(status),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(t.muted)
+                    .child("Enter 下一个  Esc 关闭".to_string()),
+            )
+            .into_any()
+    }
+
     fn editor_toolbar(&self, t: &Theme) -> AnyElement {
         let label = if self.editor.dirty {
             "编辑模式 ● 未保存"
@@ -264,6 +421,11 @@ impl Render for MarkdownView {
 
         if self.edit_mode {
             let toolbar = self.editor_toolbar(&t);
+            let find_bar = if self.find_open {
+                Some(self.find_bar(&t))
+            } else {
+                None
+            };
             return div()
                 .size_full()
                 .bg(t.bg)
@@ -342,8 +504,40 @@ impl Render for MarkdownView {
                     cx.notify();
                 }))
                 .on_action(cx.listener(|this, _: &Enter, window, cx| {
-                    this.ensure_cursor_visible(window);
-                    this.editor.apply(&ops::Op::Newline);
+                    if this.find_redirect {
+                        this.find_jump(window, 1);
+                        cx.notify();
+                    } else {
+                        this.ensure_cursor_visible(window);
+                        this.editor.apply(&ops::Op::Newline);
+                        cx.notify();
+                    }
+                }))
+                .on_action(cx.listener(|this, _: &Find, _w, cx| {
+                    this.find_with_selection();
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &WordLeft, _w, cx| {
+                    this.editor.move_word_left();
+                    this.ensure_cursor_visible(_w);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &WordRight, _w, cx| {
+                    this.editor.move_word_right();
+                    this.ensure_cursor_visible(_w);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &FindNext, window, cx| {
+                    this.find_jump(window, 1);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|this, _: &FindClose, _w, cx| {
+                    if this.find_open {
+                        this.find_close();
+                    } else if this.editor.sel_start.is_some() {
+                        // SEL-07：Esc 收起选区回到光标
+                        this.editor.sel_start = None;
+                    }
                     cx.notify();
                 }))
                 .on_action(cx.listener(|this, _: &Tab, window, cx| {
@@ -473,6 +667,7 @@ impl Render for MarkdownView {
                 .on_action(cx.listener(|this, _: &Save, _w, cx| this.save(cx)))
                 .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _w, cx| {
                     if let Some((line, dcol)) = this.editor.pos_for_point(ev.position) {
+                        this.find_redirect = false;
                         if ev.click_count >= 3 {
                             // 三击：选整行（SEL-08）
                             this.editor.select_line_at(line);
@@ -502,6 +697,16 @@ impl Render for MarkdownView {
                 .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
                     // 拖选：按住左键移动扩展选区
                     if let Some(anchor) = this.editor.drag_anchor {
+                        // SEL-09：拖出视口边缘自动滚动
+                        if let Some(b) = this.editor.last_bounds {
+                            let oy = this.scroll_handle.offset().y;
+                            if ev.position.y < b.top() {
+                                this.scroll_handle
+                                    .set_offset(point(px(0.0), (oy - px(16.0)).max(px(0.0))));
+                            } else if ev.position.y > b.bottom() {
+                                this.scroll_handle.set_offset(point(px(0.0), oy + px(16.0)));
+                            }
+                        }
                         if let Some((line, dcol)) = this.editor.pos_for_point(ev.position) {
                             this.editor.cursor_line = line;
                             this.editor.cursor_col = this.editor.source_col_for_display(line, dcol);
@@ -517,6 +722,87 @@ impl Render for MarkdownView {
                 }))
                 .cursor_text()
                 .child(toolbar)
+                .when_some(
+                    self.error.clone(),
+                    |this, err| {
+                        this.child(
+                            div()
+                                .w_full()
+                                .px_4()
+                                .py_1()
+                                .bg(gpui::rgb(0xd32f2f))
+                                .text_size(px(12.0))
+                                .text_color(gpui::white())
+                                .child(err.clone()),
+                        )
+                    },
+                )
+                .when_some(
+                    self.pending_open.clone(),
+                    |this, _path| {
+                        this.child(
+                            div()
+                                .w_full()
+                                .px_4()
+                                .py_1()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_3()
+                                .bg(gpui::rgb(0xfff3cd))
+                                .border_b_1()
+                                .border_color(gpui::rgb(0xf0d9a8))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_size(px(12.0))
+                                        .text_color(gpui::rgb(0x8a6d3b))
+                                        .child("有未保存的更改，切换文件将丢失编辑内容。".to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .id("switch-cancel")
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .bg(gpui::rgb(0xe9ecef))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _: &gpui::ClickEvent, _w, cx| {
+                                            this.pending_open = None;
+                                            cx.notify();
+                                        }))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.0))
+                                                .text_color(gpui::rgb(0x333333))
+                                                .child("保留并取消".to_string()),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("switch-ok")
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .bg(gpui::rgb(0xd32f2f))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _: &gpui::ClickEvent, _w, cx| {
+                                            if let Some(path) = this.pending_open.take() {
+                                                this.load_path(path);
+                                            }
+                                            cx.notify();
+                                        }))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.0))
+                                                .text_color(gpui::white())
+                                                .child("丢弃并切换".to_string()),
+                                        ),
+                                ),
+                        )
+                    },
+                )
+                .when_some(find_bar, |this, bar| this.child(bar))
                 .child(
                     div()
                         .id("editor-scroll")
@@ -728,6 +1014,14 @@ impl EntityInputHandler for MarkdownView {
         cx: &mut Context<Self>,
     ) {
         if !self.edit_mode {
+            return;
+        }
+        if self.find_redirect {
+            // 查找模式：输入进查询框
+            self.find_query = text.to_string();
+            self.find_index = 0;
+            self.find_all();
+            cx.notify();
             return;
         }
         if let Some(r) = range {
@@ -963,6 +1257,13 @@ fn main() {
             KeyBinding::new("ctrl-w", DeleteWordBack, Some("mkd-editor")),
             KeyBinding::new("alt-backspace", DeleteWordBack, Some("mkd-editor")),
             KeyBinding::new("alt-delete", DeleteWordForward, Some("mkd-editor")),
+            // NAV-07：单词级移动（macOS）
+            KeyBinding::new("alt-left", WordLeft, Some("mkd-editor")),
+            KeyBinding::new("alt-right", WordRight, Some("mkd-editor")),
+            // 查找（FND-01）
+            KeyBinding::new("cmd-f", Find, Some("mkd-editor")),
+            KeyBinding::new("escape", FindClose, Some("mkd-editor")),
+            KeyBinding::new("shift-enter", FindNext, Some("mkd-editor")),
         ]);
     });
 }

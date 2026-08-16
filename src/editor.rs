@@ -402,6 +402,10 @@ pub struct Editor {
     pub drag_anchor: Option<(usize, usize)>,
     /// 光标闪烁状态（NAV-10）。
     pub blink_on: bool,
+    /// 查找匹配（FND-01）：(行, 字符列)，find_index 为当前。
+    pub find_matches: Vec<(usize, usize)>,
+    pub find_index: usize,
+    pub find_len: usize,
 }
 
 impl Editor {
@@ -428,6 +432,9 @@ impl Editor {
             stick_col: None,
             drag_anchor: None,
             blink_on: true,
+            find_matches: Vec::new(),
+            find_index: 0,
+            find_len: 0,
         }
     }
 
@@ -944,6 +951,7 @@ pub struct PrepaintState {
     pub lines: Vec<ShapedLine>,
     pub caret: Option<PaintQuad>,
     pub selection: Option<PaintQuad>,
+    pub find_highlights: Vec<(PaintQuad, bool)>,
 }
 
 /// 由视图提供：从视图中读出/写入编辑器状态。
@@ -993,7 +1001,7 @@ where
     ) -> Self::PrepaintState {
         let t = Theme::light();
         // 快照编辑器状态
-        let (lines, cursor_line, cursor_col, sel_start, marked, font_size, line_height_f) = {
+        let (lines, cursor_line, cursor_col, sel_start, marked, font_size, line_height_f, find_matches, find_index, find_len) = {
             let view = self.input.read(cx);
             let e = view.editor();
             (
@@ -1004,6 +1012,9 @@ where
                 e.marked,
                 e.font_size,
                 e.line_height,
+                e.find_matches.clone(),
+                e.find_index,
+                e.find_len,
             )
         };
         let line_height = px(line_height_f);
@@ -1036,6 +1047,34 @@ where
             }
             shapes.push(shape);
             y += line_height;
+        }
+
+        // FND-01：查找匹配高亮
+        let mut find_highlights: Vec<(PaintQuad, bool)> = Vec::new();
+        if !find_matches.is_empty() && find_len > 0 {
+            for (li, shape) in shapes.iter().enumerate() {
+                for (mi, &(ml, mc)) in find_matches.iter().enumerate() {
+                    if ml != li {
+                        continue;
+                    }
+                    let x0 = bounds.left() + shape.x_for_index(mc.min(shape.len()));
+                    let x1 = bounds.left()
+                        + shape.x_for_index((mc + find_len).min(shape.len()));
+                    let y = bounds.top() + (li as f32 * line_height_f).into();
+                    let is_cur = mi == find_index;
+                    find_highlights.push((
+                        fill(
+                            Bounds::new(point(x0, y), size(x1 - x0, line_height)),
+                            if is_cur {
+                                rgba(0xffc10766)
+                            } else {
+                                rgba(0xffc10730)
+                            },
+                        ),
+                        is_cur,
+                    ));
+                }
+            }
         }
 
         let selection = sel_start.and_then(|(sl, sc)| {
@@ -1072,6 +1111,7 @@ where
             lines: shapes,
             caret,
             selection,
+            find_highlights,
         }
     }
 
@@ -1091,6 +1131,9 @@ where
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
+        for (quad, _is_cur) in std::mem::take(&mut prepaint.find_highlights) {
+            window.paint_quad(quad);
+        }
         if let Some(sel) = prepaint.selection.take() {
             window.paint_quad(sel);
         }

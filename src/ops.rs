@@ -659,6 +659,69 @@ impl Editor {
         self.dirty = true;
     }
 
+    // ---- NAV-07：Option+方向键单词移动 ----
+
+    /// CJK 汉字视作独立词（每字一个词边界），符合中文编辑习惯。
+    fn is_cjk(c: char) -> bool {
+        let u = c as u32;
+        (0x4E00..=0x9FFF).contains(&u)
+            || (0x3400..=0x4DBF).contains(&u)
+            || (0xF900..=0xFAFF).contains(&u)
+    }
+
+    pub fn move_word_left(&mut self) {
+        let (line, col) = (self.cursor_line, self.cursor_col);
+        let s = self.line(line).to_string();
+        let mut i = col;
+        while i > 0 {
+            let c = s[..i].chars().next_back().unwrap();
+            if !c.is_whitespace() {
+                break;
+            }
+            i -= c.len_utf8();
+        }
+        while i > 0 {
+            let c = s[..i].chars().next_back().unwrap();
+            if c.is_whitespace() {
+                break;
+            }
+            if Self::is_cjk(c) {
+                i -= c.len_utf8();
+                break;
+            }
+            i -= c.len_utf8();
+        }
+        self.cursor_col = i;
+        self.dirty = false;
+    }
+
+    pub fn move_word_right(&mut self) {
+        let (line, col) = (self.cursor_line, self.cursor_col);
+        let s = self.line(line).to_string();
+        let len = s.len();
+        let mut i = col.min(len);
+        while i < len {
+            let c = s[i..].chars().next().unwrap();
+            if c.is_whitespace() {
+                break;
+            }
+            if Self::is_cjk(c) {
+                i += c.len_utf8();
+                break;
+            }
+            i += c.len_utf8();
+        }
+        while i < len {
+            let c = s[i..].chars().next().unwrap();
+            if !c.is_whitespace() {
+                break;
+            }
+            i += c.len_utf8();
+        }
+        self.cursor_col = i;
+        self.dirty = false;
+    }
+
     fn delete_word_forward(&mut self) {
         if self.sel_start.is_some() {
             self.delete_selection();
@@ -1468,6 +1531,28 @@ mod tests {
         let mut e = setup("abc\n|def");
         e.apply(&mv(Direction::Left, false));
         assert_eq!(render(&e), "abc|\ndef");
+    }
+
+    #[test]
+    fn nav07_word_movement() {
+        // NAV-07：Option+方向键词移动
+        let mut e = setup("|hello world");
+        e.move_word_right();
+        assert_eq!(e.cursor_col, 6, "跳到下一个词开头");
+        e.move_word_right();
+        assert_eq!(e.cursor_col, 11, "行尾");
+        e.move_word_left();
+        assert_eq!(e.cursor_col, 6, "回到词开头");
+        e.move_word_left();
+        assert_eq!(e.cursor_col, 0, "行首");
+        // 中文按字移动
+        let mut e = setup("|你好世界");
+        e.move_word_right();
+        assert_eq!(e.cursor_col, 3, "中文每个字一个词边界");
+        // 连续空白
+        let mut e = setup("|a   b");
+        e.move_word_right();
+        assert_eq!(e.cursor_col, 4, "跨过连续空格到 b");
     }
 
     #[test]
