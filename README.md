@@ -48,6 +48,7 @@ cargo build --release        # 产出 target/release/mkd (3.5 MB)
 ```sh
 ./target/release/mkd 文件.md            # 命令行直接打开（预览）
 ./target/release/mkd --edit 文件.md     # 直接进入编辑模式
+./target/release/mkd --autosave 文件.md  # 编辑时每 30s 自动保存
 open -a dist/mkd.app 文件.md            # 通过 Finder / Launch Services 打开
 ```
 
@@ -64,6 +65,7 @@ open -a dist/mkd.app 文件.md            # 通过 Finder / Launch Services 打�
 | `Cmd+Alt+C` / `Cmd+Alt+Q` | 代码块 / 引用 |
 | `Cmd+Shift+7/8/9` | 任务 / 无序 / 有序列表 |
 | `Cmd+F` / `Enter` / `Esc` | 查找 / 下一个匹配 / 关闭 |
+| 从 Finder 拖入 .md 文件 | 打开该文件（编辑模式内） |
 | `Option+←/→` | 按词移动光标 |
 | 拖选文本后拖动 | 移动（`Option` 复制）选中文本 |
 | `Cmd+Q` | 退出（未保存确认） |
