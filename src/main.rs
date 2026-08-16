@@ -70,6 +70,11 @@ struct MarkdownView {
     find_matches: Vec<(usize, usize)>,
     /// SAV-07：待确认的新文件路径（有未保存更改时）。
     pending_open: Option<PathBuf>,
+    /// DRG-01 拖动手势状态：按下（等待确认拖动）/ 拖动中 / 源区间 / 目标位置。
+    drag_pending: Option<(gpui::Point<Pixels>, (usize, usize))>,
+    dragging: bool,
+    drag_from: Option<((usize, usize), (usize, usize))>,
+    drag_to: Option<(usize, usize)>,
 }
 
 impl MarkdownView {
@@ -95,6 +100,10 @@ impl MarkdownView {
             find_index: 0,
             find_matches: Vec::new(),
             pending_open: None,
+            drag_pending: None,
+            dragging: false,
+            drag_from: None,
+            drag_to: None,
         }
     }
 
@@ -181,7 +190,7 @@ impl MarkdownView {
         cx.notify();
     }
 
-    fn save(&mut self, cx: &mut Context<Self>) {
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.edit_mode {
             return;
         }
@@ -190,6 +199,44 @@ impl MarkdownView {
         if self.raw_source.ends_with('\n') && !source.ends_with('\n') {
             source.push('\n');
         }
+        // SAV-02：磁盘内容与加载时不同（外部修改）→ 确认覆盖
+        let path = self.path.clone();
+        let external_changed = path
+            .as_ref()
+            .map(|p| {
+                std::fs::read_to_string(p)
+                    .map(|disk| disk != self.raw_source && disk != source)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if external_changed {
+            let answer = window.prompt(
+                gpui::PromptLevel::Warning,
+                "文件在磁盘上已被其他程序修改。覆盖磁盘版本？",
+                None,
+                &["覆盖", "取消"],
+                cx,
+            );
+            let w = cx.entity().downgrade();
+            cx.spawn(|_, cx: &mut AsyncApp| {
+                let mut cx = cx.clone();
+                async move {
+                    if answer.await == Ok(0) {
+                        w.update(&mut cx, |view, cx| {
+                            view.do_write(source, cx);
+                        })
+                        .ok();
+                    }
+                }
+            })
+            .detach();
+            return;
+        }
+        self.do_write(source, cx);
+    }
+
+    /// 真正写盘（SAV-06 失败报错；成功后同步 raw_source）。
+    fn do_write(&mut self, source: String, cx: &mut Context<Self>) {
         let saved = self
             .path
             .as_ref()
@@ -664,10 +711,28 @@ impl Render for MarkdownView {
                     cx.notify();
                 }))
                 .on_action(cx.listener(|this, _: &ToggleEdit, w, cx| this.toggle_edit(w, cx)))
-                .on_action(cx.listener(|this, _: &Save, _w, cx| this.save(cx)))
+                .on_action(cx.listener(|this, _: &Save, window, cx| this.save(window, cx)))
                 .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _w, cx| {
                     if let Some((line, dcol)) = this.editor.pos_for_point(ev.position) {
                         this.find_redirect = false;
+                        let col = this.editor.source_col_for_display(line, dcol);
+                        // DRG-01：点击落在现有选区内 → 准备拖动（等待移动确认）
+                        if ev.click_count == 1 {
+                            let in_sel = this
+                                .editor
+                                .selection_bounds()
+                                .map(|((sl, sc), (el, ec))| {
+                                    (sl, sc) != (el, ec)
+                                        && (line, col) >= (sl, sc)
+                                        && (line, col) <= (el, ec)
+                                })
+                                .unwrap_or(false);
+                            if in_sel {
+                                this.drag_pending = Some((ev.position, (line, col)));
+                                cx.notify();
+                                return;
+                            }
+                        }
                         if ev.click_count >= 3 {
                             // 三击：选整行（SEL-08）
                             this.editor.select_line_at(line);
@@ -695,6 +760,38 @@ impl Render for MarkdownView {
                     }
                 }))
                 .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
+                    // DRG-01：超过阈值确认拖动
+                    if let Some((start_pos, _)) = this.drag_pending {
+                        let dx = (ev.position.x - start_pos.x).to_f64().abs();
+                        let dy = (ev.position.y - start_pos.y).to_f64().abs();
+                        if dx + dy > 4.0 {
+                            this.drag_from = this.editor.selection_bounds();
+                            this.dragging = true;
+                            this.drag_pending = None;
+                        }
+                    }
+                    if this.dragging {
+                        // DRG-02：拖到视口边缘自动滚动
+                        if let Some(b) = this.editor.last_bounds {
+                            let oy = this.scroll_handle.offset().y;
+                            if ev.position.y < b.top() {
+                                this.scroll_handle
+                                    .set_offset(point(px(0.0), (oy - px(16.0)).max(px(0.0))));
+                            } else if ev.position.y > b.bottom() {
+                                this.scroll_handle.set_offset(point(px(0.0), oy + px(16.0)));
+                            }
+                        }
+                        if let Some((line, dcol)) = this.editor.pos_for_point(ev.position) {
+                            let col = this.editor.source_col_for_display(line, dcol);
+                            this.drag_to = Some((line, col));
+                            // 拖动中隐藏选区高亮，光标显示在放置位置
+                            this.editor.sel_start = None;
+                            this.editor.cursor_line = line;
+                            this.editor.cursor_col = col;
+                            cx.notify();
+                        }
+                        return;
+                    }
                     // 拖选：按住左键移动扩展选区
                     if let Some(anchor) = this.editor.drag_anchor {
                         // SEL-09：拖出视口边缘自动滚动
@@ -716,8 +813,27 @@ impl Render for MarkdownView {
                         }
                     }
                 }))
-                .on_mouse_up(MouseButton::Left, cx.listener(|this, _ev, _w, cx| {
-                    this.editor.drag_anchor = None;
+                .on_mouse_up(MouseButton::Left, cx.listener(|this, ev: &gpui::MouseUpEvent, _w, cx| {
+                    if this.dragging {
+                        if let (Some(from), Some(to)) = (this.drag_from, this.drag_to) {
+                            if (from.0, from.1) != (to, to)
+                                && !((to, to) >= (from.0, from.1) && (to, to) <= (from.1, from.1))
+                            {
+                                this.editor.apply(&ops::Op::MoveRange {
+                                    from: (from.0 .0, from.0 .1, from.1 .0, from.1 .1),
+                                    to,
+                                    copy: ev.modifiers.alt,
+                                });
+                            }
+                        }
+                        this.dragging = false;
+                        this.drag_pending = None;
+                        this.drag_from = None;
+                        this.drag_to = None;
+                    } else {
+                        this.drag_pending = None;
+                        this.editor.drag_anchor = None;
+                    }
                     cx.notify();
                 }))
                 .cursor_text()

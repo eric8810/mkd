@@ -85,6 +85,12 @@ pub enum Op {
     DeleteWordBack,
     /// 删后一个词（Alt+Delete）。
     DeleteWordForward,
+    /// 拖放移动/复制文本（DRG-01）：from 区间 → to 位置。
+    MoveRange {
+        from: (usize, usize, usize, usize),
+        to: (usize, usize),
+        copy: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +238,11 @@ impl Editor {
             Op::DeleteWordForward => {
                 self.begin_edit(false);
                 self.delete_word_forward();
+                self.end_edit(false);
+            }
+            Op::MoveRange { from, to, copy } => {
+                self.begin_edit(false);
+                self.move_range(*from, *to, *copy);
                 self.end_edit(false);
             }
         }
@@ -749,6 +760,78 @@ impl Editor {
             i += c.len_utf8();
         }
         self.lines[line].replace_range(col..i, "");
+        self.dirty = true;
+    }
+
+    // ---- DRG-01：拖放移动/复制 ----
+
+    fn move_range(
+        &mut self,
+        from: (usize, usize, usize, usize),
+        to: (usize, usize),
+        copy: bool,
+    ) {
+        let (sl, sc, el, ec) = from;
+        if sl > el || (sl == el && sc > ec) {
+            return;
+        }
+        // 提取源文本
+        let text = if sl == el {
+            self.lines[sl][sc..ec].to_string()
+        } else {
+            let mut t = self.lines[sl][sc..].to_string();
+            for l in sl + 1..el {
+                t.push('\n');
+                t.push_str(&self.lines[l]);
+            }
+            t.push('\n');
+            t.push_str(&self.lines[el][..ec]);
+            t
+        };
+        if text.is_empty() {
+            return;
+        }
+        let (mut tl, mut tc) = to;
+        let line_len = self.lines[tl].len();
+        tc = tc.min(line_len);
+        if !copy {
+            // 目标在源区间内部：无操作
+            if (tl, tc) >= (sl, sc) && (tl, tc) <= (el, ec) {
+                return;
+            }
+            // 目标在源区间之后：删除后前移
+            if (tl, tc) > (el, ec) {
+                if sl == el {
+                    let clen = ec - sc;
+                    tc = tc.saturating_sub(clen);
+                } else {
+                    let nlines = el - sl;
+                    tl = tl.saturating_sub(nlines);
+                }
+            }
+        }
+        // 删除源区间（仅移动时；复制保留源）
+        if !copy {
+            if sl == el {
+                self.lines[sl].replace_range(sc..ec, "");
+            } else {
+                self.lines[sl] = self.lines[sl][..sc].to_string() + &self.lines[el][ec..];
+                for _ in sl + 1..=el {
+                    self.lines.remove(sl + 1);
+                }
+            }
+        }
+        // 插入到目标（先清选区，避免 insert_text 误删）
+        self.sel_start = None;
+        self.cursor_line = tl;
+        self.cursor_col = tc;
+        self.insert_text(&text);
+        // 光标移到插入末尾
+        let last = text.split('\n').last().unwrap_or("");
+        let nl = text.matches('\n').count();
+        self.cursor_line = tl + nl;
+        self.cursor_col = last.len();
+        self.sel_start = None;
         self.dirty = true;
     }
 
@@ -1553,6 +1636,49 @@ mod tests {
         let mut e = setup("|a   b");
         e.move_word_right();
         assert_eq!(e.cursor_col, 4, "跨过连续空格到 b");
+    }
+
+    #[test]
+    fn drg01_move_range() {
+        // 移动：源前（选中 "world" → 拖到行首）
+        let mut e = setup("hello world!|");
+        e.sel_start = Some((0, 6));
+        e.cursor_col = 11;
+        e.apply(&Op::MoveRange { from: (0, 6, 0, 11), to: (0, 0), copy: false });
+        assert_eq!(render(&e), "world|hello !");
+        // 复制（Option+拖）
+        let mut e = setup("hello world!|");
+        e.sel_start = Some((0, 6));
+        e.cursor_col = 11;
+        e.apply(&Op::MoveRange { from: (0, 6, 0, 11), to: (0, 0), copy: true });
+        assert_eq!(render(&e), "world|hello world!");
+        // 目标在源之后：偏移修正（"ab" 移到 cd 后）
+        let mut e = setup("abcd|");
+        e.sel_start = Some((0, 0));
+        e.cursor_col = 2;
+        e.apply(&Op::MoveRange { from: (0, 0, 0, 2), to: (0, 3), copy: false });
+        assert_eq!(render(&e), "ca|bd");
+        // 目标在源内部：无操作
+        let mut e = setup("abcd|");
+        e.sel_start = Some((0, 0));
+        e.cursor_col = 4;
+        e.apply(&Op::MoveRange { from: (0, 0, 0, 4), to: (0, 2), copy: false });
+        assert_eq!(render(&e), "abcd|");
+        // 跨行移动（选中 "b\nc" → 拖到首行开头）
+        let mut e = setup("ab\ncd|");
+        e.sel_start = Some((0, 1));
+        e.cursor_line = 1;
+        e.cursor_col = 1;
+        e.apply(&Op::MoveRange { from: (0, 1, 1, 1), to: (0, 0), copy: false });
+        assert_eq!(render(&e), "b\nc|ad");
+        // 跨行移动到源之后（目标偏移修正）
+        let mut e = setup("ab\ncd|");
+        e.sel_start = Some((0, 1));
+        e.cursor_line = 1;
+        e.cursor_col = 1;
+        e.apply(&Op::MoveRange { from: (0, 1, 1, 1), to: (1, 1), copy: false });
+        // to (1,1) 在源后：tl=0,tc=1。删除 → "ad"，插入 (0,1)："a"+"b\nc"+"d"
+        assert_eq!(render(&e), "ab\nc|d");
     }
 
     #[test]

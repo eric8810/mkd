@@ -952,6 +952,7 @@ pub struct PrepaintState {
     pub caret: Option<PaintQuad>,
     pub selection: Option<PaintQuad>,
     pub find_highlights: Vec<(PaintQuad, bool)>,
+    pub marked_underline: Option<PaintQuad>,
 }
 
 /// 由视图提供：从视图中读出/写入编辑器状态。
@@ -1023,6 +1024,7 @@ where
         let mut in_fence = false;
         let mut y = bounds.top();
         let mut caret: Option<PaintQuad> = None;
+        let lines_src = lines.clone();
 
         for (li, src) in lines.iter().enumerate() {
             let parsed = parse_line(src, in_fence);
@@ -1106,12 +1108,43 @@ where
             e.last_bounds = Some(bounds);
         });
 
-        let _ = marked;
+        // USR-01 / INP-11：IME 组合区间下划线
+        let mut marked_underline: Option<PaintQuad> = None;
+        if let Some((ms, me)) = marked {
+            if ms < me {
+                let parsed = parse_line(&lines_src[cursor_line], false);
+                let shape = &shapes[cursor_line];
+                let mut sc = shape.len();
+                let mut ec = 0usize;
+                for (k, &off) in parsed.map.iter().enumerate() {
+                    if off >= ms {
+                        sc = sc.min(k);
+                    }
+                    if off <= me {
+                        ec = ec.max(k + 1);
+                    }
+                }
+                if ec > sc {
+                    let x0 = bounds.left() + shape.x_for_index(sc.min(shape.len()));
+                    let x1 = bounds.left() + shape.x_for_index(ec.min(shape.len()));
+                    let y = bounds.top() + (cursor_line as f32 * line_height_f).into();
+                    marked_underline = Some(fill(
+                        Bounds::new(
+                            point(x0, y + line_height - px(2.)),
+                            size(x1 - x0, px(1.5)),
+                        ),
+                        t.heading,
+                    ));
+                }
+            }
+        }
+
         PrepaintState {
             lines: shapes,
             caret,
             selection,
             find_highlights,
+            marked_underline,
         }
     }
 
@@ -1136,6 +1169,9 @@ where
         }
         if let Some(sel) = prepaint.selection.take() {
             window.paint_quad(sel);
+        }
+        if let Some(ul) = prepaint.marked_underline.take() {
+            window.paint_quad(ul);
         }
         let line_height = px(self.input.read(cx).editor().line_height);
         let mut y = bounds.top();
