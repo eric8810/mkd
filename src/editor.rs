@@ -84,6 +84,25 @@ pub fn is_fence_line(line: &str) -> bool {
     matches!(f, Some('`') | Some('~')) && t.chars().take_while(|&c| c == f.unwrap()).count() >= 3
 }
 
+/// 源码列 → 显示列（parsed.map 反查；前缀内归 0）。
+fn src_col_to_display(parsed: &ParsedLine, col: usize) -> usize {
+    if col <= parsed.prefix_len {
+        return 0;
+    }
+    let target = col;
+    let mut lo = 0usize;
+    let mut hi = parsed.map.len();
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if parsed.map[mid] < target {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
 /// 从源码行解析出显示文本与映射。标记不跨行。
 pub fn parse_line(src: &str, in_fence: bool) -> ParsedLine {
     let (line_style, prefix_len) = detect_line_style(src);
@@ -950,7 +969,8 @@ impl<V: 'static + EditorSource + gpui::EntityInputHandler> IntoElement for Edito
 pub struct PrepaintState {
     pub lines: Vec<ShapedLine>,
     pub caret: Option<PaintQuad>,
-    pub selection: Option<PaintQuad>,
+    /// SEL-05：字符级选区高亮（每行一个 quad）。
+    pub selection: Vec<PaintQuad>,
     pub find_highlights: Vec<(PaintQuad, bool)>,
     pub marked_underline: Option<PaintQuad>,
 }
@@ -1079,26 +1099,48 @@ where
             }
         }
 
-        let selection = sel_start.and_then(|(sl, sc)| {
-            let cur = (cursor_line, cursor_col);
-            if (sl, sc) == cur {
-                return None;
-            }
-            let (start, end) = if (sl, sc) < cur {
-                ((sl, sc), cur)
-            } else {
-                (cur, (sl, sc))
-            };
-            let top = bounds.top() + (start.0 as f32 * line_height_f).into();
-            let bottom = bounds.top() + ((end.0 + 1) as f32 * line_height_f).into();
-            Some(fill(
-                Bounds::new(
-                    point(bounds.left(), top),
-                    size(bounds.right() - bounds.left(), bottom - top),
-                ),
-                rgba(0x0a66c260),
-            ))
-        });
+        let selection: Vec<PaintQuad> = sel_start
+            .and_then(|(sl, sc)| {
+                let cur = (cursor_line, cursor_col);
+                if (sl, sc) == cur {
+                    return None;
+                }
+                let (start, end) = if (sl, sc) < cur {
+                    ((sl, sc), cur)
+                } else {
+                    (cur, (sl, sc))
+                };
+                Some((start, end))
+            })
+            .map(|((sl, sc), (el, ec))| {
+                // SEL-05：逐行生成字符级高亮（首行 sc→行尾、中间整行、末行 0→ec）
+                let mut quads = Vec::new();
+                for li in sl..=el {
+                    let parsed = parse_line(&lines_src[li], false);
+                    let shape = &shapes[li];
+                    let (from, to) = if li == sl && li == el {
+                        (src_col_to_display(&parsed, sc), src_col_to_display(&parsed, ec))
+                    } else if li == sl {
+                        (src_col_to_display(&parsed, sc), shape.len())
+                    } else if li == el {
+                        (0, src_col_to_display(&parsed, ec))
+                    } else {
+                        (0, shape.len())
+                    };
+                    if to <= from {
+                        continue;
+                    }
+                    let x0 = bounds.left() + shape.x_for_index(from.min(shape.len()));
+                    let x1 = bounds.left() + shape.x_for_index(to.min(shape.len()));
+                    let y = bounds.top() + (li as f32 * line_height_f).into();
+                    quads.push(fill(
+                        Bounds::new(point(x0, y), size(x1 - x0, line_height)),
+                        rgba(0x0a66c260),
+                    ));
+                }
+                quads
+            })
+            .unwrap_or_default();
 
         // 缓存布局供命中测试 / IME 定位。
         let cache_shapes: Vec<Option<ShapedLine>> = shapes.iter().map(|s| Some(s.clone())).collect();
@@ -1167,8 +1209,8 @@ where
         for (quad, _is_cur) in std::mem::take(&mut prepaint.find_highlights) {
             window.paint_quad(quad);
         }
-        if let Some(sel) = prepaint.selection.take() {
-            window.paint_quad(sel);
+        for quad in std::mem::take(&mut prepaint.selection) {
+            window.paint_quad(quad);
         }
         if let Some(ul) = prepaint.marked_underline.take() {
             window.paint_quad(ul);
@@ -1252,6 +1294,30 @@ fn build_runs(parsed: &ParsedLine, t: &Theme, _font_size: f32) -> Vec<TextRun> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sel05_src_col_to_display() {
+        // SEL-05：源码列 → 显示列（字符级选区定位）
+        let p = parse_line("hello world", false);
+        assert_eq!(src_col_to_display(&p, 0), 0);
+        assert_eq!(src_col_to_display(&p, 5), 5);
+        assert_eq!(src_col_to_display(&p, 11), 11);
+        // 加粗标记列归入显示列起点
+        let p = parse_line("**bold** text", false);
+        assert_eq!(src_col_to_display(&p, 0), 0, "** 前");
+        assert_eq!(src_col_to_display(&p, 2), 0, "b 的显示列");
+        assert_eq!(src_col_to_display(&p, 8), 4, "text 前的空格");
+        assert_eq!(src_col_to_display(&p, 9), 5, "text 的 t");
+        // 前缀（标题）
+        let p = parse_line("## 标题", false);
+        assert_eq!(p.prefix_len, 3);
+        assert_eq!(src_col_to_display(&p, 0), 0);
+        assert_eq!(src_col_to_display(&p, 3), 0, "标题正文起点");
+        // 列表前缀
+        let p = parse_line("- 项目", false);
+        assert_eq!(src_col_to_display(&p, 0), 0);
+        assert_eq!(src_col_to_display(&p, 2), 0);
+    }
 
     #[test]
     fn plain_line_map() {
