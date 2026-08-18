@@ -439,12 +439,19 @@ impl MarkdownView {
         let sel = self.editor.selection_bounds();
         if let Some(((sl, sc), (el, ec))) = sel {
             if (sl, sc) != (el, ec) {
-                let mut q = self.editor.line(sl)[sc..el.min(self.editor.line(sl).len())].to_string();
-                if el > sl {
-                    // 跨行：取首行剩余 + 末行开头
-                    q = self.editor.line(sl)[sc..].to_string();
+                let q = if sl == el {
+                    self.editor.line(sl)[sc..ec.min(self.editor.line(sl).len())].to_string()
+                } else {
+                    // 跨行：首行 sc..行尾 + 中间行 + 末行 0..ec
+                    let mut q = self.editor.line(sl)[sc..].to_string();
+                    for l in sl + 1..el {
+                        q.push('\n');
+                        q.push_str(&self.editor.line(l));
+                    }
+                    q.push('\n');
                     q.push_str(&self.editor.line(el)[..ec.min(self.editor.line(el).len())]);
-                }
+                    q
+                };
                 self.find_query = q;
             }
         }
